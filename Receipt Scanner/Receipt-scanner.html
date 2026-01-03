@@ -943,6 +943,21 @@
                 row.insertCell(1).textContent = '$' + item.price.toFixed(2);
             });
 
+            // Subtotal  (Optional)
+            if (data.subtotal && data.subtotal > 0) {
+                const subRow = tbody.insertRow();
+                subRow.insertCell(0).textContent = 'Subtotal';
+                subRow.insertCell(1).textContent = '$' + data.subtotal.toFixed(2);
+            }
+
+            // GST (Optional)
+            if (data.gst && data.gst > 0) {
+                const gstRow = tbody.insertRow();
+                gstRow.insertCell(0).textContent = 'GST';
+                gstRow.insertCell(1).textContent = '$' + data.gst.toFixed(2);
+            }
+
+            // TOTAL
             const totalRow = tbody.insertRow();
             totalRow.className = 'total-row';
             totalRow.insertCell(0).textContent = 'TOTAL';
