@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Receipt Scanner — Multi-Receipt (Auto Split)</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+    </script>
+    <style>
+        body { font-family: Arial, Helvetica, sans-serif; padding: 18px; max-width: 1100px; margin: 0 auto; }
+        h1 { color: #333; }
+        .controls { display:flex; gap:10px; align-items:center; margin-bottom:10px }
+        #canvasWrap { position:relative; border:1px solid #ddd; width:100%; max-width:900px; margin-bottom:10px }
+        canvas { width:100%; display:block }
+        #overlayCanvas { position:absolute; left:0; top:0; z-index:10; }
+        .control-row { display:flex; gap:12px; align-items:center }
+        #boxesPreview { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px }
+        .boxThumb { width:120px; height:120px; object-fit:cover; border:1px solid #ccc; border-radius:6px }
+        .btn { padding:8px 12px; background:#3366ff; color:white; border:none; border-radius:6px; cursor:pointer }
+        .btn:disabled { opacity:0.5 }
+        #debug { background:#111; color:#eee; padding:8px; border-radius:6px; font-family: monospace; max-height:220px; overflow:auto }
+        table { width:100%; border-collapse: collapse; margin-top:12px }
+        th,td { border:1px solid #ddd; padding:8px; }
+    </style>
+</head>
+<body>
+    <h1>Receipt Scanner — Auto-split Multi-Receipts</h1>
+    <p>Drop or select a PDF/image that contains one or more receipts on the same page. Click "Draw Boxes" to manually select receipts, draw boxes around each receipt, then click "OCR Selected".</p>
+
+    <div class="controls">
+        <input id="fileInput" type="file" accept="image/*,application/pdf" />
+        <button id="drawModeBtn" class="btn">Draw Boxes</button>
+        <button id="clearBoxesBtn" class="btn">Clear Boxes</button>
+        <button id="ocrSelectedBtn" class="btn" disabled>OCR Selected</button>
+        <button id="exportCSV" class="btn" disabled>Export Summary CSV</button>
+        <span id="selectedFile" style="margin-left:12px;color:#333;font-weight:600;"></span>
+    </div>
+
+    <div class="controls" style="margin-top:8px; gap:8px; align-items:center;">
+        <label style="font-size:13px;"><input id="showOverlay" type="checkbox" checked> Show overlay</label>
+    </div>
+
+    <div id="canvasWrap">
+        <canvas id="pageCanvas"></canvas>
+        <canvas id="overlayCanvas"></canvas>
+    </div>
+    <div id="boxesPreview"></div>
+
+    <h3>Results</h3>
+    <div id="resultsWrap">
+        <table id="resultsTable">
+            <thead><tr><th>#</th><th>Page</th><th>Merchant</th><th>Date</th><th>Total</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <h3>Debug</h3>
+    <div id="debug"></div>
+
+    <script>
+        function appendDebug(msg) {
+            const d = document.getElementById('debug');
+            d.textContent += (d.textContent ? '\n' : '') + msg;
+            d.scrollTop = d.scrollHeight;
+        }
+
+        const fileInput = document.getElementById('fileInput');
+        const exportCSV = document.getElementById('exportCSV');
+        const canvas = document.getElementById('pageCanvas');
+        const ctx = canvas.getContext('2d');
+        const boxesPreview = document.getElementById('boxesPreview');
+        let pageImageCanvas = null;
+        let pageCanvases = [];
+        let detections = [];
+        let results = [];
+        let currentPageIndex = 1;
+        let drawMode = false;
+
+        fileInput.addEventListener('change', async (e) => {
+            const f = e.target.files[0];
+            if (!f) return;
+            appendDebug('Selected: ' + f.name);
+            await renderFileToCanvas(f);
+            document.getElementById('selectedFile').textContent = f.name;
+        });
+
+        const canvasWrap = document.getElementById('canvasWrap');
+        canvasWrap.addEventListener('dragover', (e) => { 
+            e.preventDefault(); 
+            canvasWrap.style.borderColor = '#3366ff'; 
+        });
+        canvasWrap.addEventListener('dragleave', () => { 
+            canvasWrap.style.borderColor = '#ddd'; 
+        });
+        canvasWrap.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            canvasWrap.style.borderColor = '#ddd';
+            const file = e.dataTransfer?.files?.[0];
+            if (!file) return;
+            appendDebug('Dropped: ' + file.name);
+            await renderFileToCanvas(file);
+            document.getElementById('selectedFile').textContent = file.name;
+        });
+
+        exportCSV.addEventListener('click', () => {
+            if (results.length === 0) { 
+                alert('No results to export'); 
+                return; 
+            }
+            let csv = 'Page,Date,Merchant,Total\n';
+            results.forEach(r => csv += `${r.page || ''},"${r.date}","${r.merchant}",${r.total.toFixed(2)}\n`);
+            const blob = new Blob([csv], {type:'text/csv'}); 
+            const url = URL.createObjectURL(blob); 
+            const a = document.createElement('a'); 
+            a.href = url; 
+            a.download = 'receipts_summary.csv'; 
+            a.click(); 
+            URL.revokeObjectURL(url);
+        });
+
+        async function renderFileToCanvas(file) {
+            if (file.type === 'application/pdf') {
+                const ab = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument({data:ab}).promise;
+                pageCanvases = [];
+                const maxPages = Math.min(pdf.numPages, 20);
+                if (pdf.numPages > maxPages) {
+                    appendDebug('PDF has ' + pdf.numPages + ' pages; processing first ' + maxPages + ' only.');
+                }
+                for (let i = 1; i <= maxPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const viewport = page.getViewport({scale:2.0});
+                    canvas.width = viewport.width; 
+                    canvas.height = viewport.height;
+                    await page.render({canvasContext: ctx, viewport}).promise;
+                    const off = document.createElement('canvas'); 
+                    off.width = canvas.width; 
+                    off.height = canvas.height; 
+                    off.getContext('2d').drawImage(canvas,0,0);
+                    pageCanvases.push(off);
+                }
+                pageImageCanvas = pageCanvases[0]; 
+                canvas.width = pageImageCanvas.width; 
+                canvas.height = pageImageCanvas.height; 
+                ctx.drawImage(pageImageCanvas,0,0);
+                appendDebug('Rendered ' + pageCanvases.length + ' page(s) from PDF');
+            } else {
+                const url = await fileToDataURL(file);
+                const img = new Image();
+                await new Promise((res,rej)=>{ 
+                    img.onload = ()=>res(); 
+                    img.onerror=rej; 
+                    img.src=url; 
+                });
+                canvas.width = img.width; 
+                canvas.height = img.height; 
+                ctx.drawImage(img,0,0);
+                pageImageCanvas = document.createElement('canvas'); 
+                pageImageCanvas.width = canvas.width; 
+                pageImageCanvas.height = canvas.height; 
+                pageImageCanvas.getContext('2d').drawImage(canvas,0,0);
+                pageCanvases = [];
+            }
+            appendDebug('Rendered to canvas: ' + canvas.width + 'x' + canvas.height);
+        }
+
+        function fileToDataURL(file) { 
+            return new Promise((res,rej)=>{ 
+                const r=new FileReader(); 
+                r.onload=()=>res(r.result); 
+                r.onerror=rej; 
+                r.readAsDataURL(file); 
+            }); 
+        }
+
+        const showOverlay = document.getElementById('showOverlay');
+        showOverlay.addEventListener('change', ()=>{
+            const ov = document.getElementById('overlayCanvas');
+            ov.style.display = showOverlay.checked ? 'block' : 'none';
+            if (!showOverlay.checked) {
+                ov.getContext('2d').clearRect(0,0,ov.width,ov.height);
+            }
+        });
+
+        const drawModeBtn = document.getElementById('drawModeBtn');
+        const clearBoxesBtn = document.getElementById('clearBoxesBtn');
+        const ocrSelectedBtn = document.getElementById('ocrSelectedBtn');
+        
+        drawModeBtn.addEventListener('click', ()=>{
+            enableDrawMode(!drawMode);
+            drawModeBtn.textContent = drawMode ? 'Drawing: ON' : 'Draw Boxes';
+            document.getElementById('showOverlay').checked = true;
+            document.getElementById('overlayCanvas').style.display = 'block';
+        });
+        
+        clearBoxesBtn.addEventListener('click', ()=>{ clearDetections(); });
+        ocrSelectedBtn.addEventListener('click', ()=>{ ocrSelectedBoxes(); });
+
+        function drawOverlayBoxes(boxes, color='lime') {
+            const ov = document.getElementById('overlayCanvas'); 
+            if (!ov) return;
+            ov.width = canvas.width; 
+            ov.height = canvas.height; 
+            const octx = ov.getContext('2d'); 
+            octx.clearRect(0,0,ov.width,ov.height);
+            if (!boxes || boxes.length===0) return;
+            octx.lineWidth = Math.max(2, Math.round(ov.width / 600));
+            octx.strokeStyle = color; 
+            octx.fillStyle = 'white';
+            octx.font = '14px Arial';
+            boxes.forEach((b, idx)=>{
+                octx.strokeRect(b.x, b.y, b.w, b.h);
+                octx.fillText('#' + (idx+1), b.x + 6, b.y + 18);
+            });
+        }
+
+        function updateDetectionsPreview(pageIndex) {
+            boxesPreview.innerHTML = '';
+            const srcCanvas = (pageCanvases?.length) ? pageCanvases[(pageIndex||currentPageIndex)-1] : pageImageCanvas;
+            detections.forEach((b,i)=>{
+                const wrapper = document.createElement('div'); 
+                wrapper.style.position='relative'; 
+                wrapper.style.display='inline-block'; 
+                wrapper.style.marginRight='6px';
+                const img = document.createElement('img'); 
+                img.src = cropCanvasToDataURL(srcCanvas, b, 300); 
+                img.className = 'boxThumb'; 
+                wrapper.appendChild(img);
+                const rm = document.createElement('button'); 
+                rm.textContent='✕'; 
+                rm.title='Remove'; 
+                rm.style.position='absolute'; 
+                rm.style.right='6px'; 
+                rm.style.top='6px';
+                rm.style.background='red';
+                rm.style.color='white';
+                rm.style.border='none';
+                rm.style.borderRadius='4px';
+                rm.style.cursor='pointer';
+                rm.style.padding='4px 8px';
+                rm.addEventListener('click', ()=>{ 
+                    detections.splice(i,1); 
+                    updateDetectionsPreview(pageIndex); 
+                    drawOverlayBoxes(detections); 
+                    document.getElementById('ocrSelectedBtn').disabled = detections.length===0; 
+                });
+                wrapper.appendChild(rm);
+                boxesPreview.appendChild(wrapper);
+            });
+            document.getElementById('ocrSelectedBtn').disabled = detections.length === 0;
+        }
+
+        function clearDetections() { 
+            detections = []; 
+            boxesPreview.innerHTML = ''; 
+            drawOverlayBoxes([]); 
+            document.getElementById('ocrSelectedBtn').disabled = true; 
+            appendDebug('Cleared manual boxes.'); 
+        }
+
+        function enableDrawMode(enable) {
+            drawMode = !!enable;
+            const ov = document.getElementById('overlayCanvas');
+            ov.style.pointerEvents = drawMode ? 'auto' : 'none';
+            ov.style.cursor = drawMode ? 'crosshair' : 'default';
+        }
+
+        function getMousePos(ev) {
+            const rect = canvas.getBoundingClientRect(); 
+            const scaleX = canvas.width / rect.width; 
+            const scaleY = canvas.height / rect.height; 
+            return { 
+                x: Math.round((ev.clientX - rect.left) * scaleX), 
+                y: Math.round((ev.clientY - rect.top) * scaleY) 
+            };
+        }
+
+        function setupOverlayDrawing() {
+            const ov = document.getElementById('overlayCanvas'); 
+            let isDown=false, startX=0, startY=0, curRect=null, dragIndex=-1, dragOffsetX=0, dragOffsetY=0;
+            
+            ov.addEventListener('mousedown', (e)=>{ 
+                if (!drawMode) return; 
+                const pos = getMousePos(e);
+                for (let i=0;i<detections.length;i++){ 
+                    const b=detections[i]; 
+                    if (pos.x>=b.x && pos.x<=b.x+b.w && pos.y>=b.y && pos.y<=b.y+b.h) { 
+                        dragIndex=i; 
+                        isDown=true; 
+                        dragOffsetX = pos.x - b.x; 
+                        dragOffsetY = pos.y - b.y; 
+                        return; 
+                    } 
+                }
+                isDown = true; 
+                startX = pos.x; 
+                startY = pos.y; 
+                curRect = {x:startX,y:startY,w:0,h:0};
+            });
+            
+            ov.addEventListener('mousemove', (e)=>{ 
+                if (!isDown) return; 
+                const pos=getMousePos(e); 
+                if (dragIndex>=0) { 
+                    const b=detections[dragIndex]; 
+                    b.x = Math.max(0, Math.min(canvas.width - b.w, pos.x - dragOffsetX)); 
+                    b.y = Math.max(0, Math.min(canvas.height - b.h, pos.y - dragOffsetY)); 
+                    drawOverlayBoxes(detections, 'lime'); 
+                } else if (curRect) { 
+                    curRect.w = Math.abs(pos.x - startX); 
+                    curRect.h = Math.abs(pos.y - startY); 
+                    curRect.x = Math.min(pos.x, startX); 
+                    curRect.y = Math.min(pos.y, startY); 
+                    drawOverlayBoxes(detections.concat([curRect]), 'yellow'); 
+                } 
+            });
+            
+            ov.addEventListener('mouseup', (e)=>{ 
+                if (!isDown) return; 
+                isDown=false; 
+                if (dragIndex>=0) { 
+                    dragIndex=-1; 
+                } else if (curRect) { 
+                    if (curRect.w>20 && curRect.h>20) { 
+                        detections.push({
+                            x:Math.round(curRect.x), 
+                            y:Math.round(curRect.y), 
+                            w:Math.round(curRect.w), 
+                            h:Math.round(curRect.h)
+                        }); 
+                    } 
+                    curRect=null; 
+                    drawOverlayBoxes(detections); 
+                    updateDetectionsPreview(currentPageIndex); 
+                    document.getElementById('ocrSelectedBtn').disabled = detections.length === 0; 
+                } 
+            });
+        }
+
+        async function ocrSelectedBoxes() {
+            if (!detections || detections.length===0) { 
+                appendDebug('No boxes to OCR'); 
+                return; 
+            }
+            const tbody = document.querySelector('#resultsTable tbody');
+            const pageCanvas = (pageCanvases?.length) ? pageCanvases[currentPageIndex-1] : pageImageCanvas;
+            
+            for (let i=0;i<detections.length;i++) {
+                const b = detections[i]; 
+                const idx = i+1; 
+                appendDebug('OCR box ' + idx + '/' + detections.length);
+                const crop = cropCanvas(pageCanvas, b, 10);
+                const enhanced = autoCropAndEnhance(crop, 1500);
+                preprocessCanvas(enhanced);
+                
+                try {
+                    const res = await ocrCanvas(enhanced, (q)=> appendDebug('OCR progress: ' + Math.round(q*100) + '%'));
+                    appendDebug('OCR text (box ' + idx + '): ' + (res.text || '').slice(0,80).replace(/\n/g,' '));
+                    const cleaned = cleanOCRText(res.text || ''); 
+                    const parsed = parseReceipt(cleaned); 
+                    parsed.page = currentPageIndex; 
+                    results.push(parsed);
+                    const tr = document.createElement('tr'); 
+                    tr.innerHTML = `<td>${results.length}</td><td>${currentPageIndex}</td><td>${parsed.merchant}</td><td>${parsed.date}</td><td>${parsed.total.toFixed(2)}</td>`; 
+                    tbody.appendChild(tr);
+                } catch (err) {
+                    appendDebug('OCR error (box ' + idx + '): ' + err.message);
+                    const tr = document.createElement('tr'); 
+                    tr.innerHTML = `<td>?</td><td>${currentPageIndex}</td><td colspan="3">Error: ${err.message}</td>`; 
+                    tbody.appendChild(tr);
+                }
+                await new Promise(r=>setTimeout(r,120));
+            }
+            document.getElementById('exportCSV').disabled = results.length === 0;
+            appendDebug('Finished OCR. Total results: ' + results.length);
+        }
+
+        setupOverlayDrawing();
+
+        function cropCanvasToDataURL(src, box, maxSize=300) {
+            const c = document.createElement('canvas'); 
+            const s = Math.min(maxSize, box.w, box.h); 
+            c.width = s; 
+            c.height = s; 
+            const cc = c.getContext('2d'); 
+            cc.drawImage(src, box.x, box.y, box.w, box.h, 0, 0, s, s); 
+            return c.toDataURL();
+        }
+        
+        function cropCanvas(src, box, pad=0) {
+            const c = document.createElement('canvas'); 
+            const bx = Math.max(0, box.x-pad);
+            const by = Math.max(0, box.y-pad); 
+            const bw = Math.min(src.width - bx, box.w + pad*2);
+            const bh = Math.min(src.height - by, box.h + pad*2); 
+            c.width = bw; 
+            c.height = bh; 
+            c.getContext('2d').drawImage(src, bx, by, bw, bh, 0, 0, bw, bh); 
+            return c;
+        }
+
+        function autoCropAndEnhance(canvas, targetWidth = 1500) {
+            const ctx = canvas.getContext('2d');
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imgData.data;
+            
+            // Find content bounds
+            let minX = canvas.width, maxX = 0, minY = canvas.height, maxY = 0;
+            const threshold = 240;
+            
+            for (let y = 0; y < canvas.height; y++) {
+                for (let x = 0; x < canvas.width; x++) {
+                    const i = (y * canvas.width + x) * 4;
+                    const brightness = (data[i] + data[i+1] + data[i+2]) / 3;
+                    if (brightness < threshold) {
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                    }
+                }
+            }
+            
+            const padding = 10;
+            minX = Math.max(0, minX - padding);
+            minY = Math.max(0, minY - padding);
+            maxX = Math.min(canvas.width, maxX + padding);
+            maxY = Math.min(canvas.height, maxY + padding);
+            
+            const cropWidth = maxX - minX;
+            const cropHeight = maxY - minY;
+            
+            const cropped = document.createElement('canvas');
+            cropped.width = cropWidth;
+            cropped.height = cropHeight;
+            cropped.getContext('2d').drawImage(canvas, minX, minY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+            
+            // Upscale
+            const scale = Math.min(3, targetWidth / cropWidth);
+            const upscaled = document.createElement('canvas');
+            upscaled.width = Math.round(cropWidth * scale);
+            upscaled.height = Math.round(cropHeight * scale);
+            const upCtx = upscaled.getContext('2d');
+            upCtx.imageSmoothingEnabled = true;
+            upCtx.imageSmoothingQuality = 'high';
+            upCtx.drawImage(cropped, 0, 0, upscaled.width, upscaled.height);
+            
+            return upscaled;
+        }
+
+        async function ocrCanvas(c, progressCb) {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    const res = await Tesseract.recognize(c, 'eng', { 
+                        logger: (m)=>{ 
+                            if (m.status === 'recognizing text' && m.progress) {
+                                progressCb(m.progress); 
+                            }
+                        } 
+                    });
+                    resolve(res.data);
+                } catch (err) { 
+                    reject(err); 
+                }
+            });
+        }
+
+        function preprocessCanvas(canvas) {
+            const w = canvas.width, h = canvas.height;
+            const ctx = canvas.getContext('2d');
+            let imgData = ctx.getImageData(0, 0, w, h);
+            const data = imgData.data;
+
+            // Convert to grayscale
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i], g = data[i+1], b = data[i+2];
+                const l = Math.round(0.2126*r + 0.7152*g + 0.0722*b);
+                data[i] = data[i+1] = data[i+2] = l;
+            }
+
+            // Sharpen kernel
+            const kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+            const output = new Uint8ClampedArray(data.length);
+            
+            for (let y = 1; y < h-1; y++) {
+                for (let x = 1; x < w-1; x++) {
+                    let sum = 0;
+                    let ki = 0;
+                    for (let ky = -1; ky <= 1; ky++) {
+                        for (let kx = -1; kx <= 1; kx++) {
+                            const px = x + kx;
+                            const py = y + ky;
+                            const idx = (py * w + px) * 4;
+                            sum += data[idx] * kernel[ki++];
+                        }
+                    }
+                    const dstIdx = (y * w + x) * 4;
+                    const v = Math.max(0, Math.min(255, sum));
+                    output[dstIdx] = output[dstIdx+1] = output[dstIdx+2] = v;
+                    output[dstIdx+3] = 255;
+                }
+            }
+
+            // Copy edges
+            for (let x = 0; x < w; x++) {
+                const top = x * 4;
+                const bottom = ((h-1) * w + x) * 4;
+                output[top] = data[top]; 
+                output[top+1] = data[top+1]; 
+                output[top+2] = data[top+2]; 
+                output[top+3] = 255;
+                output[bottom] = data[bottom]; 
+                output[bottom+1] = data[bottom+1]; 
+                output[bottom+2] = data[bottom+2]; 
+                output[bottom+3] = 255;
+            }
+            for (let y = 0; y < h; y++) {
+                const left = (y * w) * 4;
+                const right = (y * w + (w-1)) * 4;
+                output[left] = data[left]; 
+                output[left+1] = data[left+1]; 
+                output[left+2] = data[left+2]; 
+                output[left+3] = 255;
+                output[right] = data[right]; 
+                output[right+1] = data[right+1]; 
+                output[right+2] = data[right+2]; 
+                output[right+3] = 255;
+            }
+
+            imgData.data.set(output);
+
+            // Otsu threshold
+            const histogram = new Array(256).fill(0);
+            for (let i = 0; i < output.length; i += 4) histogram[output[i]]++;
+            const total = w * h;
+            let sum = 0;
+            for (let t = 0; t < 256; t++) sum += t * histogram[t];
+            let sumB = 0;
+            let wB = 0;
+            let maxVar = 0;
+            let threshold = 128;
+            for (let t = 0; t < 256; t++) {
+                wB += histogram[t];
+                if (wB === 0) continue;
+                const wF = total - wB;
+                if (wF === 0) break;
+                sumB += t * histogram[t];
+                const mB = sumB / wB;
+                const mF = (sum - sumB) / wF;
+                const varBetween = wB * wF * Math.pow(mB - mF, 2);
+                if (varBetween > maxVar) {
+                    maxVar = varBetween;
+                    threshold = t;
+                }
+            }
+
+            // Apply threshold
+            for (let i = 0; i < output.length; i += 4) {
+                const v = output[i] >= threshold ? 255 : 0;
+                output[i] = output[i+1] = output[i+2] = v;
+                output[i+3] = 255;
+            }
+
+            imgData.data.set(output);
+            ctx.putImageData(imgData, 0, 0);
+            return canvas;
+        }
+
+        function cleanOCRText(text) {
+            // Remove common OCR artifacts - FIXED REGEX
+            text = (text || '')
+                .replace(/[^\x20-\x7E\n]/g, '') // Keep only printable ASCII
+                .replace(/\s+/g, ' ')
+                .trim();
+            return text;
+        }
+
+        function parseReceipt(text) {
+            const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+            
+            // Extract merchant - look for the first substantial non-numeric line
+            let merchant = 'Unknown';
+            const skipWords = ['receipt', 'tax', 'invoice', 'total', 'subtotal', 'date', 'time', 'thank', 'you'];
+            
+            for (const line of lines) {
+                // Skip if too short, too long, starts with number, or contains common receipt words
+                if (line.length < 3 || line.length > 50) continue;
+                if (/^\d/.test(line)) continue;
+                if (skipWords.some(w => line.toLowerCase().includes(w))) continue;
+                
+                // Look for lines with mostly letters (potential merchant name)
+                const letterCount = (line.match(/[a-zA-Z]/g) || []).length;
+                const digitCount = (line.match(/\d/g) || []).length;
+                
+                if (letterCount > 3 && letterCount > digitCount * 2) {
+                    merchant = line;
+                    break;
+                }
+            }
+            
+            // Extract date - normalize to DD/MM/YYYY format
+            let date = '';
+            const datePatterns = [
+                /\b(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})\b/g,  // DD/MM/YYYY or MM/DD/YYYY
+                /\b(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})\b/g,  // YYYY/MM/DD
+                /\b([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})\b/gi  // Jan 15, 2025
+            ];
+            
+            for (const pattern of datePatterns) {
+                const match = text.match(pattern);
+                if (match) {
+                    const raw = match[0];
+                    
+                    // Parse and normalize to DD/MM/YYYY
+                    if (/^\d{4}/.test(raw)) {
+                        // YYYY/MM/DD format
+                        const parts = raw.split(/[-\/]/);
+                        date = `${parts[2].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[0]}`;
+                    } else if (/^[A-Z][a-z]{2}/.test(raw)) {
+                        // Month name format - keep as is
+                        date = raw;
+                    } else {
+                        // DD/MM/YYYY or MM/DD/YYYY - try to determine format
+                        const parts = raw.split(/[-\/]/);
+                        const num1 = parseInt(parts[0]);
+                        const num2 = parseInt(parts[1]);
+                        
+                        if (num1 > 12) {
+                            // Must be DD/MM/YYYY
+                            date = `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+                        } else if (num2 > 12) {
+                            // Must be MM/DD/YYYY, convert to DD/MM/YYYY
+                            date = `${parts[1].padStart(2, '0')}/${parts[0].padStart(2, '0')}/${parts[2]}`;
+                        } else {
+                            // Ambiguous - assume MM/DD/YYYY and convert to DD/MM/YYYY
+                            date = `${parts[1].padStart(2, '0')}/${parts[0].padStart(2, '0')}/${parts[2]}`;
+                        }
+                    }
+                    break;
+                }
+            }
+            
+            // Extract total
+            let total = 0;
+            const totalPatterns = [
+                /total[:\s]*\$?\s*(\d+[.,]\d{2})/gi,
+                /amount[:\s]*\$?\s*(\d+[.,]\d{2})/gi,
+                /grand\s*total[:\s]*\$?\s*(\d+[.,]\d{2})/gi,
+                /balance[:\s]*\$?\s*(\d+[.,]\d{2})/gi,
+                /\$\s*(\d+[.,]\d{2})/g
+            ];
+            
+            for (const pattern of totalPatterns) {
+                const matches = [...text.matchAll(pattern)];
+                if (matches.length > 0) {
+                    const amounts = matches.map(m => parseFloat(m[1].replace(',', '.')));
+                    total = Math.max(...amounts);
+                    break;
+                }
+            }
+            
+            return { merchant, date, total };
+        }
+    </script>
+</body>
+</html>
