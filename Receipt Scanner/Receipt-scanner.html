@@ -602,9 +602,10 @@
         function parseReceipt(text) {
             let lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 2);
 
-            const items = [];
+            let items = [];
             let total = 0;
             let subtotal = 0;
+            let gst = 0;
             let date = '';
             let merchant = '';
 
@@ -630,6 +631,8 @@
                 /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\b/i,
                 /Date[:\s]*(\d{1,2}\/\d{1,2}\/\d{2,4})/i
             ];
+            const fallbackDatePattern = /(\d{2})(\d{2})(\d{2,4})/; // DD MM YY(YY)
+            
             for (const line of lines) {
                 for (const pattern of datePatterns) {
                     const match = line.match(pattern);
@@ -639,6 +642,69 @@
                     }
                 }
                 if (date) break;
+                
+                // Fallback: remove all non-digit characters
+                const digitOnlyLine = line.replace(/\D/g, ''); 
+                const matchDigitSeq = digitOnlyLine.match(/\d{8,10}/); // first 8-10 digit sequence
+                
+                if (matchDigitSeq) {
+                    const digits = matchDigitSeq[0]; // e.g. "237472026" or "23042026"    
+                    const matchFallback = digitOnlyLine.match(fallbackDatePattern);     
+                    if (matchFallback) {
+                        let d = parseInt(matchFallback[1], 10);
+                        let m = parseInt(matchFallback[2], 10);
+                        let y = parseInt(matchFallback[3], 10);
+                        
+                        // OCR correction rules: swap 7 ↔ 0 if month > 12
+                        if (m > 12 && m < 32) m = parseInt(matchFallback[2].replace('7','0'), 10);
+
+                        // Handle 2-digit year
+                        if (y < 100) y += 2000;
+
+                        // Only accept valid date
+                        if (d >=1 && d <= 31 && m >=1 && m <=12 && y > 2000 && y < 2100) {
+                            // Pad day and month to 2 digits
+                            date = `${d.toString().padStart(2,'0')}/${m.toString().padStart(2,'0')}/${y}`;
+                        }
+                    }
+                }
+            }
+
+            // -------------------------------
+            // Helper: detect if receipt uses quantity markers
+            // -------------------------------
+            function usesQtyPattern(lines) {
+                const qtyPattern = /^\s*(\d+)\s*(x|no\.?)\s+/i;
+                return lines.some(line => qtyPattern.test(line));
+            }
+
+            // -------------------------------
+            // Helper: parse items with qty markers
+            // -------------------------------
+            function parseQtyMarkerItems(lines) {
+                const qtyPattern = /^\s*(\d+)\s*(x|no\.?)\s+(.*)/i;
+                const pricePattern = /\$?\s*(\d+\.\d{2})\b/;
+                const parsedItems = [];
+
+                for (let i = 0; i < lines.length; i++) {
+                    const match = lines[i].match(qtyPattern);
+                    if (match) {
+                        const qty = parseInt(match[1], 10);
+                        let itemName = match[3].trim();
+
+                        // Price may be on same line or next line
+                        let price = 0;
+                        const priceMatch = lines[i].match(pricePattern) || (i + 1 < lines.length && lines[i + 1].match(pricePattern));
+                        if (priceMatch) {
+                            price = parseFloat(priceMatch[1].replace(',', '.'));
+                        }
+
+                        // Multiply price by qty if desired
+                        parsedItems.push({ name: itemName, price });
+                    }
+                }
+
+                return parsedItems;
             }
 
             // -------------------------------
@@ -646,110 +712,146 @@
             // -------------------------------
             const pricePattern = /\$?\s*(\d+\.\d{2})\b/g;
             const subtotalPattern = /\bsub[\s-]?to?t?a?l\b/i; // fuzzy subtotal
+            const subtotalVariants = /\b(subfotal|subtatal|subt0tal|sub-total)\b/i;
             const totalPattern = /\btotal\b/i;
             const taxPattern = /\b(G[S5]T|G5T|GST|65T|included|incl)\b/i; // fuzzy GST/tax
-            const servicePattern = /\b(dine\s*in|take\s*away|takeaway|eat\s*in|delivery|self\s*pickup)\b/i;
-            let tax = 0;
 
-            let skipNext = false;
+            if (usesQtyPattern(lines)) {
+                // Use qty marker parser
+                items = parseQtyMarkerItems(lines);
 
-            for (let i = 0; i < lines.length; i++) {
-                if (skipNext) {
-                    skipNext = false;
-                    continue;
-                }
-
-                const line = lines[i];
-                const lowerLine = line.toLowerCase();
-
-                // Skip headers/footers
-                if (/(tel:|reg\. no|gst|staff:|slip:|pos )/i.test(lowerLine)) continue;
-
-                // Skip service-mode lines
-                if (servicePattern.test(lowerLine)) continue;
-                
-                const matches = [...line.matchAll(pricePattern)];
-                const hasPrice = matches.length > 0;
-
-                // Handle split items: current line no price, next line has price
-                if (!hasPrice && i < lines.length - 1) {
-                    const nextLine = lines[i + 1];
-                    const nextMatches = [...nextLine.matchAll(pricePattern)];
-                    if (nextMatches.length > 0) {
-                        const price = parseFloat(nextMatches[nextMatches.length - 1][1].replace(',', '.'));
-                        let itemName = line.replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
-                        if (itemName && price > 0) {
-                            items.push({ name: itemName, price });
-                            skipNext = true;
-                            continue;
-                        }
-                    }
-                }
-
-                if (hasPrice) {
+                // Scan for subtotal, total, and GST after parsing items
+                for (let line of lines) {
+                    const lowerLine = line.toLowerCase();
+                    const matches = [...line.matchAll(pricePattern)];
+                    if (matches.length === 0) continue;
                     const price = parseFloat(matches[matches.length - 1][1].replace(',', '.'));
 
-                    // -------------------------------
-                    // 3a️⃣ GST / tax detection
-                    // -------------------------------
                     if (taxPattern.test(lowerLine)) {
-                        gst = price;  // capture GST/tax separately
-                        continue;     // do not add as item
-                    }
-
-                    // -------------------------------
-                    // 3b️⃣ Fuzzy subtotal detection
-                    // -------------------------------
-                    if (subtotalPattern.test(lowerLine)) {
+                        gst = price;
+                    } else if (subtotalPattern.test(lowerLine)) {
                         subtotal = price;
-                        continue;
-                    }
-
-                    // -------------------------------
-                    // 3c️⃣ Total detection (ignore subtotal)
-                    // -------------------------------
-                    if (totalPattern.test(lowerLine) && !subtotalPattern.test(lowerLine)) {
+                    } else if (totalPattern.test(lowerLine) && !subtotalPattern.test(lowerLine)) {
                         total = price;
+                    }
+                }
+            } else {
+                // Existing parser branch
+                let skipNext = false;
+
+                for (let i = 0; i < lines.length; i++) {
+                    if (skipNext) {
+                        skipNext = false;
                         continue;
                     }
 
-                    // -------------------------------
-                    // 3d️⃣ Skip non-item lines
-                    // -------------------------------
-                    if (/(tax|change|cash|card|tender)/i.test(lowerLine)) continue;
+                    const line = lines[i];
+                    const lowerLine = line.toLowerCase();
 
-                    // -------------------------------
-                    // 3e️⃣ Add item
-                    // -------------------------------
-                    let itemName = line.replace(pricePattern, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
-                    if (itemName && price > 0) {
-                        const digitRatio = (itemName.match(/\d/g) || []).length / itemName.length;
-                        if (digitRatio < 0.7) {
-                            items.push({ name: itemName, price });
+                    // Skip headers/footers
+                    if (/(tel:|reg\. no|gst|staff:|slip:|pos )/i.test(lowerLine)) continue;
+
+                    const matches = [...line.matchAll(pricePattern)];
+                    const hasPrice = matches.length > 0;
+
+                    // Handle split items: current line no price, next line has price
+                    if (!hasPrice && i < lines.length - 1) {
+                        const nextLine = lines[i + 1];
+                        const nextMatches = [...nextLine.matchAll(pricePattern)];
+                        if (nextMatches.length > 0) {
+                            const price = parseFloat(nextMatches[nextMatches.length - 1][1].replace(',', '.'));
+                            let itemName = line.replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
+                            if (itemName && price > 0) {
+                                items.push({ name: itemName, price });
+                                skipNext = true;
+                                continue;
+                            }
+                        }
+                    }
+
+                    if (hasPrice) {
+                        const price = parseFloat(matches[matches.length - 1][1].replace(',', '.'));
+
+                        // GST / tax
+                        if (taxPattern.test(lowerLine)) {
+                            gst = price;
+                            continue;
+                        }
+
+                        // Subtotal
+                        if (subtotalPattern.test(lowerLine)|| subtotalVariants.test(lowerLine)) {
+                            subtotal = price;
+                            continue;
+                        }
+
+                        // Total
+                        if (totalPattern.test(lowerLine) && !subtotalPattern.test(lowerLine)) {
+                            total = price;
+                            continue;
+                        }
+
+                        // Skip non-item lines
+                        if (/(tax|change|cash|card|tender)/i.test(lowerLine)) continue;
+
+                        // Add as item
+                        let itemName = line.replace(pricePattern, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
+                        if (itemName && price > 0) {
+                            const digitRatio = (itemName.match(/\d/g) || []).length / itemName.length;
+                            if (digitRatio < 0.7) {
+                                // Remove leading and trailing numbers or non-letter characters
+                                let cleanName = itemName.replace(/^[^a-zA-Z]+|[^a-zA-Z]+$/g, '').trim();
+
+                                if (cleanName.length > 0) {
+                                    items.push({ name: cleanName, price });
+                                }
+                            }
                         }
                     }
                 }
             }
 
             // -------------------------------
-            // 4️⃣ Ensure total is reasonable
+            // 4️⃣ Ensure total is reasonable (consistent with displayResults)
             // -------------------------------
-            // (no changes here)
+            const itemsSum = items.reduce((sum, item) => sum + item.price, 0);
+
+            // Start with the parsed total
+            let finalTotal = total;
+
+            // If no total is found, use subtotal if reasonable, else sum of items
+            if (!finalTotal) {
+                if (subtotal && subtotal >= itemsSum) finalTotal = subtotal;
+                else finalTotal = itemsSum;
+            } else {
+                // Total exists: check against itemsSum
+                if (finalTotal < itemsSum) {
+                    // If total is smaller than sum of items, prefer subtotal if available and sufficient
+                    if (subtotal && subtotal >= itemsSum) finalTotal = subtotal;
+                    else finalTotal = itemsSum;
+                } else if (finalTotal > itemsSum + 0.01) {
+                    // Total is larger than items sum, keep it but could log/debug
+                    // optional: appendDebug(`Total (${finalTotal.toFixed(2)}) larger than sum of items (${itemsSum.toFixed(2)})`);
+                }
+            }
 
             // -------------------------------
-            // 5️⃣ Return parsed receipt
+            // 5️⃣ Normalize merchant
             // -------------------------------
+            merchant = normalizeMerchant(merchant, text);
+
             return { merchant, date, items, subtotal, gst, total };
         }
 
         function cleanItemName(itemName) {
             // Remove SKU numbers (patterns like: 123456, 12-3456, SKU123456, #123456)
+            itemName = itemName.replace(/\d{5,}[^\s]*/g, '') // Remove digits + everything until space
             itemName = itemName.replace(/\b\d{5,}\b/g, ''); // 5+ consecutive digits
             itemName = itemName.replace(/\b\d{2,}-\d{2,}\b/g, ''); // Format like 12-3456
             itemName = itemName.replace(/\bsku\s*:?\s*\d+/gi, ''); // SKU: 123456
             itemName = itemName.replace(/\b#\d{4,}\b/g, ''); // #123456
             itemName = itemName.replace(/\bitem\s*:?\s*\d+/gi, ''); // Item: 123456
             itemName = itemName.replace(/\bcode\s*:?\s*\d+/gi, ''); // Code: 123456
+
             
             // Clean up item name - only remove specific leading/trailing characters
             // Keep parentheses, but remove dashes, underscores, asterisks at start/end
@@ -961,17 +1063,31 @@
                 gstRow.insertCell(1).textContent = '$' + data.gst.toFixed(2);
             }
 
-            // TOTAL
+            // 4️⃣ Calculate sum of items
+            const itemsSum = data.items.reduce((sum, it) => sum + it.price, 0);
+           
+            // Decide final total for display
+            let displayTotal = data.total;
+
+            if (displayTotal < itemsSum) {
+                // If total is less than items sum, prefer subtotal if available
+                if (data.subtotal && data.subtotal >= itemsSum) {
+                    displayTotal = data.subtotal;
+                    appendDebug(`Total (${data.total.toFixed(2)}) was less than sum of items (${itemsSum.toFixed(2)}), using subtotal (${data.subtotal.toFixed(2)}) instead.`);
+                } else {
+                    displayTotal = itemsSum;
+                    appendDebug(`Total (${data.total.toFixed(2)}) was less than sum of items (${itemsSum.toFixed(2)}), using sum of items instead.`);
+                }
+            } else if (displayTotal > itemsSum + 0.01) {
+                // If total is larger than items sum, just notify
+                appendDebug(`Total (${displayTotal.toFixed(2)}) is larger than sum of items (${itemsSum.toFixed(2)}).`);
+            }
+
+            // Update table with final total
             const totalRow = tbody.insertRow();
             totalRow.className = 'total-row';
             totalRow.insertCell(0).textContent = 'TOTAL';
-            totalRow.insertCell(1).textContent = '$' + data.total.toFixed(2);
-
-            // If the total differs significantly from the sum of items, notify the user
-            const itemsSum = data.items.reduce((s, it) => s + it.price, 0);
-            if (Math.abs(itemsSum - data.total) > 0.01) {
-                appendDebug('Note: total adjusted to $' + data.total.toFixed(2) + ' (items sum: $' + itemsSum.toFixed(2) + ').');
-            }
+            totalRow.insertCell(1).textContent = '$' + displayTotal.toFixed(2);
 
             results.style.display = 'flex';
             progressContainer.style.display = 'none';
