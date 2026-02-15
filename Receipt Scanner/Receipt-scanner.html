@@ -689,21 +689,33 @@
                 const parsedItems = [];
 
                 for (let i = 0; i < lines.length; i++) {
-                    let match = lines[i].match(qtyPattern);
-                    if (!match) match = lines[i].match(ocrQtyPattern); // fallback to OCR variant
+                    const currentLine = lines[i];
+                    if (!currentLine || typeof currentLine !== 'string') continue; // safety check
+                    
+                    let match = currentLine.match(qtyPattern);
+                    if (!match) match = currentLine.match(ocrQtyPattern); // fallback to OCR variant
                     if (match) {
-                        const qty = parseInt(match[1].replace(/[lI|]/g, '1').replace(/O/g, '0'), 10); // normalize OCR chars
-                        let itemName = (match[3] || '').trim();
+                        try {
+                            const qtyStr = match[1];
+                            if (!qtyStr) continue; // skip if qty is empty
+                            const qty = parseInt(qtyStr.replace(/[lI|]/g, '1').replace(/O/g, '0'), 10);
+                            const itemNameRaw = match[3];
+                            const itemName = (itemNameRaw || '').trim();
+                            if (!itemName) continue; // skip empty names
 
-                        // Price may be on same line or next line
-                        let price = 0;
-                        const priceMatch = lines[i].match(pricePattern) || (i + 1 < lines.length && lines[i + 1].match(pricePattern));
-                        if (priceMatch) {
-                            price = parseFloat(priceMatch[1].replace(',', '.'));
+                            // Price may be on same line or next line
+                            let price = 0;
+                            const priceMatch = currentLine.match(pricePattern) || (i + 1 < lines.length && lines[i + 1] && lines[i + 1].match(pricePattern));
+                            if (priceMatch) {
+                                price = parseFloat(priceMatch[1].replace(',', '.'));
+                            }
+
+                            // Multiply price by qty if desired
+                            parsedItems.push({ name: cleanItemName(itemName), price });
+                        } catch (e) {
+                            appendDebug('Error parsing qty item at line ' + i + ': ' + (e && e.message ? e.message : JSON.stringify(e)));
+                            continue;
                         }
-
-                        // Multiply price by qty if desired
-                        parsedItems.push({ name: cleanItemName(itemName), price });
                     }
                 }
 
