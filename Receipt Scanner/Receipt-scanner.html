@@ -684,7 +684,7 @@
             // -------------------------------
             function parseQtyMarkerItems(lines) {
                 const qtyPattern = /^\s*(\d+)\s*(x|no\.?)\s+(.*)/i;
-                const ocrQtyPattern = /^\s*([1lI|O0]+)\s*[xX]\s+(.*)/i; // OCR-tolerant qty pattern
+                const ocrQtyPattern = /^\s*([1lI|O0]+)\s*([xX])\s+(.*)/i; // OCR-tolerant qty pattern; groups: qty, x, name
                 const pricePattern = /\$?\s*(\d+\.\d{2})\b/;
                 const parsedItems = [];
 
@@ -693,7 +693,7 @@
                     if (!match) match = lines[i].match(ocrQtyPattern); // fallback to OCR variant
                     if (match) {
                         const qty = parseInt(match[1].replace(/[lI|]/g, '1').replace(/O/g, '0'), 10); // normalize OCR chars
-                        let itemName = match[3].trim();
+                        let itemName = (match[3] || '').trim();
 
                         // Price may be on same line or next line
                         let price = 0;
