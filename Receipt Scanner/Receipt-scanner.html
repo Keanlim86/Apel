@@ -712,22 +712,25 @@
             // -------------------------------
 
             function extractPriceFromLine(line) {
-                // Try with spaces: "$6. 30" or "6. 30"
-                const spacePattern = /\$?\s*(\d+)\s*\.\s*(\d{2})/;
-                const spaceMatch = line.match(spacePattern);
-                if (spaceMatch) {
-                    return parseFloat(spaceMatch[1] + '.' + spaceMatch[2]);
+                if (!line) return null;
+                // Use global patterns and prefer the last full match on the line.
+                const spacedRe = /\$?\s*(\d+)\s*\.\s*(\d{2})(?!\d)/g; // avoid matching 0.783 as 0.78
+                const standardRe = /\$?\s*(\d+\.\d{2})(?!\d)/g;
+
+                const spacedMatches = [...line.matchAll(spacedRe)];
+                if (spacedMatches.length > 0) {
+                    const m = spacedMatches[spacedMatches.length - 1];
+                    return parseFloat(m[1] + '.' + m[2]);
                 }
-                
-                // Fallback to standard pattern: "$6.30" or "6.30"
-                const standardPattern = /\$?\s*(\d+\.\d{2})/;
-                const standardMatch = line.match(standardPattern);
-                if (standardMatch) {
-                    return parseFloat(standardMatch[1].replace(',', '.'));
+
+                const stdMatches = [...line.matchAll(standardRe)];
+                if (stdMatches.length > 0) {
+                    const m = stdMatches[stdMatches.length - 1];
+                    return parseFloat(m[1].replace(',', '.'));
                 }
-                
+
                 return null;
-            }   
+            }
 
             // -------------------------------
             // 3️⃣ Parse items and prices
