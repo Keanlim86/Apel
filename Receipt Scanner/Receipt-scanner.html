@@ -700,7 +700,7 @@
                         }
 
                         // Multiply price by qty if desired
-                        parsedItems.push({ name: itemName, price });
+                        parsedItems.push({ name: cleanItemName(itemName), price });
                     }
                 }
 
@@ -752,7 +752,7 @@
                     if (taxPattern.test(lowerLine)) {
                         gst = price;
                     } else if (subtotalPattern.test(lowerLine)) {
-                        subtotal = price;
+                        if (!subtotal) subtotal = price;
                     } else if (totalPattern.test(lowerLine) && !subtotalPattern.test(lowerLine)) {
                         total = price;
                     }
@@ -784,7 +784,7 @@
                             const price = nextPrice;
                             let itemName = line.replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
                             if (itemName && price >= 0) {
-                                items.push({ name: itemName, price });
+                                items.push({ name: cleanItemName(itemName), price });
                                 skipNext = true;
                                 continue;
                             }
@@ -800,9 +800,9 @@
                             continue;
                         }
 
-                        // Subtotal
+                        // Subtotal (only set on first match to avoid duplicates)
                         if (subtotalPattern.test(lowerLine)|| subtotalVariants.test(lowerLine)) {
-                            subtotal = price;
+                            if (!subtotal) subtotal = price;
                             continue;
                         }
 
@@ -824,7 +824,7 @@
                                 let cleanName = itemName.replace(/^[^a-zA-Z]+|[^a-zA-Z]+$/g, '').trim();
 
                                 if (cleanName.length > 0) {
-                                    items.push({ name: cleanName, price });
+                                    items.push({ name: cleanItemName(cleanName), price });
                                 }
                             }
                         }
