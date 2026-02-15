@@ -708,6 +708,28 @@
             }
 
             // -------------------------------
+            // 🆕 Helper function to extract prices with spaces
+            // -------------------------------
+
+            function extractPriceFromLine(line) {
+                // Try with spaces: "$6. 30" or "6. 30"
+                const spacePattern = /\$?\s*(\d+)\s*\.\s*(\d{2})/;
+                const spaceMatch = line.match(spacePattern);
+                if (spaceMatch) {
+                    return parseFloat(spaceMatch[1] + '.' + spaceMatch[2]);
+                }
+                
+                // Fallback to standard pattern: "$6.30" or "6.30"
+                const standardPattern = /\$?\s*(\d+\.\d{2})/;
+                const standardMatch = line.match(standardPattern);
+                if (standardMatch) {
+                    return parseFloat(standardMatch[1].replace(',', '.'));
+                }
+                
+                return null;
+            }   
+
+            // -------------------------------
             // 3️⃣ Parse items and prices
             // -------------------------------
             const pricePattern = /\$?\s*(\d+\.\d{2})\b/g;
@@ -757,9 +779,9 @@
                     // Handle split items: current line no price, next line has price
                     if (!hasPrice && i < lines.length - 1) {
                         const nextLine = lines[i + 1];
-                        const nextMatches = [...nextLine.matchAll(pricePattern)];
-                        if (nextMatches.length > 0) {
-                            const price = parseFloat(nextMatches[nextMatches.length - 1][1].replace(',', '.'));
+                        const nextPrice = extractPriceFromLine(nextLine);
+                        if (nextPrice !== null) {
+                            const price = nextPrice;
                             let itemName = line.replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
                             if (itemName && price > 0) {
                                 items.push({ name: itemName, price });
