@@ -675,7 +675,8 @@
             // -------------------------------
             function usesQtyPattern(lines) {
                 const qtyPattern = /^\s*(\d+)\s*(x|no\.?)\s+/i;
-                return lines.some(line => qtyPattern.test(line));
+                const ocrQtyPattern = /^\s*[1lI|O0]+\s*[xX]\s+/; // OCR variants: I/l/| for 1, O for 0
+                return lines.some(line => qtyPattern.test(line) || ocrQtyPattern.test(line));
             }
 
             // -------------------------------
@@ -683,13 +684,15 @@
             // -------------------------------
             function parseQtyMarkerItems(lines) {
                 const qtyPattern = /^\s*(\d+)\s*(x|no\.?)\s+(.*)/i;
+                const ocrQtyPattern = /^\s*([1lI|O0]+)\s*[xX]\s+(.*)/i; // OCR-tolerant qty pattern
                 const pricePattern = /\$?\s*(\d+\.\d{2})\b/;
                 const parsedItems = [];
 
                 for (let i = 0; i < lines.length; i++) {
-                    const match = lines[i].match(qtyPattern);
+                    let match = lines[i].match(qtyPattern);
+                    if (!match) match = lines[i].match(ocrQtyPattern); // fallback to OCR variant
                     if (match) {
-                        const qty = parseInt(match[1], 10);
+                        const qty = parseInt(match[1].replace(/[lI|]/g, '1').replace(/O/g, '0'), 10); // normalize OCR chars
                         let itemName = match[3].trim();
 
                         // Price may be on same line or next line
