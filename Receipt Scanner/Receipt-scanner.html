@@ -733,6 +733,7 @@
             // 3️⃣ Parse items and prices
             // -------------------------------
             const pricePattern = /\$?\s*(\d+\.\d{2})\b/g;
+            const spacedPricePattern = /\$?\s*\d+\s*\.\s*\d{2}\b/g; // matches spaced prices like "6. 30"
             const subtotalPattern = /\bsub[\s-]?to?t?a?l\b/i; // fuzzy subtotal
             const subtotalVariants = /\b(subfotal|subtatal|subt0tal|sub-total)\b/i;
             const totalPattern = /\btotal\b/i;
@@ -826,12 +827,27 @@
                         const nextLine = lines[i + 1];
                         const nextPrice = extractPriceFromLine(nextLine);
                         if (nextPrice !== null) {
-                            price = nextPrice;
-                            let itemName = line.replace(/^\s*\d+\s*(?:x|pcs|pc)?\s*/i, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
-                            if (itemName && price >= 0) {
-                                items.push({ name: cleanItemName(itemName), price });
-                                skipNext = true;
-                                continue;
+                            // Heuristic: only attach next-line price when current line looks like an item
+                            const candidate = line;
+                            const letterCount = (candidate.match(/[a-zA-Z]/g) || []).length;
+                            const digitCount = (candidate.match(/\d/g) || []).length;
+                            const lowerCandidate = candidate.toLowerCase();
+
+                            // Reject obvious metadata lines containing long numeric sequences after ':' or keywords
+                            const hasColonNumber = /:\s*\d{3,}/.test(candidate);
+                            const isMeta = /^(order|repis|receipt|pax|pos|gst|uen|closed|payment|invoice|tax|tel)\b/i.test(lowerCandidate) || /repis|order|receipt|pax|pos|gst|uen|closed|payment|invoice|tax|tel/.test(lowerCandidate);
+
+                            // Candidate should have sufficient letters and not be dominated by digits
+                            const looksLikeItem = letterCount > 2 && (digitCount / Math.max(1, candidate.length)) < 0.3 && !hasColonNumber && !isMeta;
+
+                            if (looksLikeItem) {
+                                price = nextPrice;
+                                let itemName = candidate.replace(/^\s*\d+\s*(?:x|pcs|pc)?\s*/i, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
+                                if (itemName && price >= 0) {
+                                    items.push({ name: cleanItemName(itemName), price });
+                                    skipNext = true;
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -860,8 +876,9 @@
                         // Skip non-item lines
                         if (/(tax|change|cash|card|tender)/i.test(lowerLine)) continue;
 
-                        // Add as item
-                        let itemName = line.replace(pricePattern, '').replace(/^\s*\d+\s*(?:x|pcs|pc)?\s*/i, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
+                        // Add as item - remove any spaced or normal price tokens first
+                        let itemLineClean = line.replace(spacedPricePattern, '').replace(pricePattern, '');
+                        let itemName = itemLineClean.replace(/^\s*\d+\s*(?:x|pcs|pc)?\s*/i, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
                         if (itemName && price >= 0) {
                             const digitRatio = (itemName.match(/\d/g) || []).length / itemName.length;
                             if (digitRatio < 0.7) {
@@ -918,6 +935,11 @@
             itemName = itemName.replace(/\b#\d{4,}\b/g, ''); // #123456
             itemName = itemName.replace(/\bitem\s*:?\s*\d+/gi, ''); // Item: 123456
             itemName = itemName.replace(/\bcode\s*:?\s*\d+/gi, ''); // Code: 123456
+            // Remove price-like tokens (e.g. $10.80, 10. 80, 10,80) left in item text
+            itemName = itemName.replace(/\$?\s*\d+\s*[\.,]\s*\d{2}\b/g, '');
+            // Remove stray currency symbols or multiple dots left behind
+            itemName = itemName.replace(/\$/g, '');
+            itemName = itemName.replace(/\.{2,}/g, '');
 
             
             // Clean up item name - only remove specific leading/trailing characters
