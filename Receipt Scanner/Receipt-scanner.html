@@ -736,7 +736,7 @@
             const subtotalPattern = /\bsub[\s-]?to?t?a?l\b/i; // fuzzy subtotal
             const subtotalVariants = /\b(subfotal|subtatal|subt0tal|sub-total)\b/i;
             const totalPattern = /\btotal\b/i;
-            const taxPattern = /\b(G[S5]T|G5T|GST|65T|included|incl|Inc. 9% GST)|GST 9%)\b/i; // fuzzy GST/tax
+            const taxPattern = /\b(G[S5]T|G5T|GST|65T|included|incl|Inc\.\s*9%\s*GST|GST\s*9%)\b/i; // fuzzy GST/tax
 
             if (usesQtyPattern(lines)) {
                 // Use qty marker parser
