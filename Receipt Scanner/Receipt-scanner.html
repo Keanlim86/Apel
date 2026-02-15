@@ -783,7 +783,7 @@
                         if (nextPrice !== null) {
                             const price = nextPrice;
                             let itemName = line.replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
-                            if (itemName && price > 0) {
+                            if (itemName && price >= 0) {
                                 items.push({ name: itemName, price });
                                 skipNext = true;
                                 continue;
@@ -817,7 +817,7 @@
 
                         // Add as item
                         let itemName = line.replace(pricePattern, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
-                        if (itemName && price > 0) {
+                        if (itemName && price >= 0) {
                             const digitRatio = (itemName.match(/\d/g) || []).length / itemName.length;
                             if (digitRatio < 0.7) {
                                 // Remove leading and trailing numbers or non-letter characters
