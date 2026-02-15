@@ -738,6 +738,42 @@
             const totalPattern = /\btotal\b/i;
             const taxPattern = /\b(G[S5]T|G5T|GST|65T|included|incl|Inc\.\s*9%\s*GST|GST\s*9%)\b/i; // fuzzy GST/tax
 
+            // Better fuzzy detection for 'subtotal' to catch OCR variants like 'subiotal'
+            function levenshtein(a, b) {
+                if (a === b) return 0;
+                const al = a.length, bl = b.length;
+                if (al === 0) return bl;
+                if (bl === 0) return al;
+                const matrix = Array.from({ length: al + 1 }, () => new Array(bl + 1));
+                for (let i = 0; i <= al; i++) matrix[i][0] = i;
+                for (let j = 0; j <= bl; j++) matrix[0][j] = j;
+                for (let i = 1; i <= al; i++) {
+                    for (let j = 1; j <= bl; j++) {
+                        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                        matrix[i][j] = Math.min(
+                            matrix[i - 1][j] + 1,
+                            matrix[i][j - 1] + 1,
+                            matrix[i - 1][j - 1] + cost
+                        );
+                    }
+                }
+                return matrix[al][bl];
+            }
+
+            function isLikelySubtotal(line) {
+                if (!line) return false;
+                // quick regex catches
+                if (subtotalPattern.test(line) || subtotalVariants.test(line)) return true;
+                // token-wise fuzzy check
+                const tokens = line.split(/\s|[:\-]/).map(t => t.replace(/[^a-zA-Z]/g, '').toLowerCase()).filter(Boolean);
+                for (const t of tokens) {
+                    if (t.length < 4) continue;
+                    const dist = levenshtein(t, 'subtotal');
+                    if (dist <= 2) return true;
+                }
+                return false;
+            }
+
             if (usesQtyPattern(lines)) {
                 // Use qty marker parser
                 items = parseQtyMarkerItems(lines);
@@ -751,9 +787,9 @@
 
                     if (taxPattern.test(lowerLine)) {
                         gst = price;
-                    } else if (subtotalPattern.test(lowerLine)) {
+                    } else if (isLikelySubtotal(lowerLine)) {
                         if (!subtotal) subtotal = price;
-                    } else if (totalPattern.test(lowerLine) && !subtotalPattern.test(lowerLine)) {
+                    } else if (totalPattern.test(lowerLine) && !isLikelySubtotal(lowerLine)) {
                         total = price;
                     }
                 }
@@ -773,16 +809,25 @@
                     // Skip headers/footers
                     if (/(tel:|reg\.?\s*no|gst\s*reg|staff:|slip:|pos )/i.test(lowerLine)) continue;
 
-                    const matches = [...line.matchAll(pricePattern)];
-                    const hasPrice = matches.length > 0;
+                    // Prefer extractPriceFromLine which handles spaced prices like "6. 30"
+                    let price = extractPriceFromLine(line);
+                    let matches = [];
+                    if (price === null) {
+                        matches = [...line.matchAll(pricePattern)];
+                        if (matches.length > 0) {
+                            price = parseFloat(matches[matches.length - 1][1].replace(',', '.'));
+                        }
+                    }
+
+                    const hasPrice = price !== null;
 
                     // Handle split items: current line no price, next line has price
                     if (!hasPrice && i < lines.length - 1) {
                         const nextLine = lines[i + 1];
                         const nextPrice = extractPriceFromLine(nextLine);
                         if (nextPrice !== null) {
-                            const price = nextPrice;
-                            let itemName = line.replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
+                            price = nextPrice;
+                            let itemName = line.replace(/^\s*\d+\s*(?:x|pcs|pc)?\s*/i, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
                             if (itemName && price >= 0) {
                                 items.push({ name: cleanItemName(itemName), price });
                                 skipNext = true;
@@ -792,7 +837,7 @@
                     }
 
                     if (hasPrice) {
-                        const price = parseFloat(matches[matches.length - 1][1].replace(',', '.'));
+                        // price variable already set (either spaced pattern or regex)
 
                         // GST / tax
                         if (taxPattern.test(lowerLine)) {
@@ -801,7 +846,7 @@
                         }
 
                         // Subtotal (only set on first match to avoid duplicates)
-                        if (subtotalPattern.test(lowerLine)|| subtotalVariants.test(lowerLine)) {
+                        if (isLikelySubtotal(lowerLine)) {
                             if (!subtotal) subtotal = price;
                             continue;
                         }
@@ -816,7 +861,7 @@
                         if (/(tax|change|cash|card|tender)/i.test(lowerLine)) continue;
 
                         // Add as item
-                        let itemName = line.replace(pricePattern, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
+                        let itemName = line.replace(pricePattern, '').replace(/^\s*\d+\s*(?:x|pcs|pc)?\s*/i, '').replace(/\d+\.?\d*\s*(pcs|pc|x|kg|g|ml|l|pkt)?/gi, '').trim();
                         if (itemName && price >= 0) {
                             const digitRatio = (itemName.match(/\d/g) || []).length / itemName.length;
                             if (digitRatio < 0.7) {
