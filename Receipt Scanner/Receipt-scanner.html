@@ -771,7 +771,7 @@
                     const lowerLine = line.toLowerCase();
 
                     // Skip headers/footers
-                    if (/(tel:|reg\. no|gst|staff:|slip:|pos )/i.test(lowerLine)) continue;
+                    if (/(tel:|reg\.?\s*no|gst\s*reg|staff:|slip:|pos )/i.test(lowerLine)) continue;
 
                     const matches = [...line.matchAll(pricePattern)];
                     const hasPrice = matches.length > 0;
