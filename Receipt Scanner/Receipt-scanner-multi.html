@@ -53,7 +53,7 @@
     <h3>Results</h3>
     <div id="resultsWrap">
         <table id="resultsTable">
-            <thead><tr><th>#</th><th>Page</th><th>Merchant</th><th>Date</th><th>Total</th></tr></thead>
+            <thead><tr><th>#</th><th>Page</th><th>Merchant</th><th>Date</th><th>Subtotal</th><th>GST</th><th>Total</th></tr></thead>
             <tbody></tbody>
         </table>
     </div>
@@ -111,8 +111,8 @@
                 alert('No results to export'); 
                 return; 
             }
-            let csv = 'Page,Date,Merchant,Total\n';
-            results.forEach(r => csv += `${r.page || ''},"${r.date}","${r.merchant}",${r.total.toFixed(2)}\n`);
+            let csv = 'Page,Date,Merchant,Subtotal,GST,Total\n';
+            results.forEach(r => csv += `${r.page || ''},"${r.date}","${r.merchant}",${r.subtotal.toFixed(2)},${r.gst.toFixed(2)},${r.total.toFixed(2)}\n`);
             const blob = new Blob([csv], {type:'text/csv'}); 
             const url = URL.createObjectURL(blob); 
             const a = document.createElement('a'); 
@@ -365,7 +365,7 @@
                     parsed.page = currentPageIndex; 
                     results.push(parsed);
                     const tr = document.createElement('tr'); 
-                    tr.innerHTML = `<td>${results.length}</td><td>${currentPageIndex}</td><td>${parsed.merchant}</td><td>${parsed.date}</td><td>${parsed.total.toFixed(2)}</td>`; 
+                    tr.innerHTML = `<td>${results.length}</td><td>${currentPageIndex}</td><td>${parsed.merchant}</td><td>${parsed.date}</td><td>${parsed.subtotal.toFixed(2)}</td><td>${parsed.gst.toFixed(2)}</td><td>${parsed.total.toFixed(2)}</td>`; 
                     tbody.appendChild(tr);
                 } catch (err) {
                     appendDebug('OCR error (box ' + idx + '): ' + err.message);
