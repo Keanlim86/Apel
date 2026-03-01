@@ -8,6 +8,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <!-- PDF.js library for rendering PDFs to canvas -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="cleanOCR.js"></script>
     <script>
         // Configure PDF.js worker
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
@@ -494,98 +495,6 @@
             }
         }
 
-        function cleanOCRText(text) {
-            // Remove common OCR artifacts and special characters
-            text = text.replace(/[^\x00-\x7F]/g, ''); // Remove non-ASCII
-            text = text.replace(/Â¥|Â«|Â»|Â®|Â©|Â°/g, ''); // Remove specific artifacts
-            text = text.replace(/[|~`^]/g, ''); // Remove confusing symbols
-            
-            // Fix common OCR letter confusion for Singapore merchants
-            // Isetan
-            text = text.replace(/\bT SINGAPORE\b/gi, 'ISETAN SINGAPORE');
-            text = text.replace(/\bTSETAN\b/gi, 'ISETAN');
-            text = text.replace(/\b1SETAN\b/gi, 'ISETAN');
-            text = text.replace(/\bISETAN\b/gi, 'ISETAN');
-
-            // Ichiban Boshi
-            text = text.replace(/\bTCHIBAN\b/gi, 'ICHIBAN');
-            text = text.replace(/\b1CHIBAN\b/gi, 'ICHIBAN');
-            
-            // FairPrice variations
-            text = text.replace(/\bFa1rpr1ce\b/gi, 'FAIRPRICE');
-            text = text.replace(/\bFa1rprice\b/gi, 'FAIRPRICE');
-            text = text.replace(/\bFairpr1ce\b/gi, 'FAIRPRICE');
-            text = text.replace(/\bFair Pr1ce\b/gi, 'FAIRPRICE');
-            text = text.replace(/\bNTUC\s*Fa1rprice\b/gi, 'NTUC FAIRPRICE');
-            
-            // Cold Storage
-            text = text.replace(/\bC0LD\s*ST0RAGE\b/gi, 'COLD STORAGE');
-            text = text.replace(/\bC0LDSTORAGE\b/gi, 'COLD STORAGE');
-            text = text.replace(/\bCOLD\s*ST0RAGE\b/gi, 'COLD STORAGE');
-            text = text.replace(/\bC0LD\s*STORAGE\b/gi, 'COLD STORAGE');
-            
-            // Giant
-            text = text.replace(/\bG1ANT\b/gi, 'GIANT');
-            text = text.replace(/\bGlANT\b/gi, 'GIANT');
-            
-            // Sheng Siong
-            text = text.replace(/\bSHENG\s*S10NG\b/gi, 'SHENG SIONG');
-            text = text.replace(/\bSHENG\s*SlONG\b/gi, 'SHENG SIONG');
-            
-            // Prime / Cheers / 7-Eleven
-            text = text.replace(/\bPR1ME\b/gi, 'PRIME');
-            text = text.replace(/\bCHEERS\b/gi, 'CHEERS');
-            text = text.replace(/\b7-ELEVEN\b/gi, '7-ELEVEN');
-            text = text.replace(/\b7-ELEVEtl\b/gi, '7-ELEVEN');
-            text = text.replace(/\b7\s*ELEVEN\b/gi, '7-ELEVEN');
-            
-            // Don Don Donki
-            text = text.replace(/\bD0N\s*D0N\s*D0NKI\b/gi, 'DON DON DONKI');
-            text = text.replace(/\bDON\s*DON\s*D0NKI\b/gi, 'DON DON DONKI');
-            text = text.replace(/\bD0NK1\b/gi, 'DONKI');
-            
-            // Guardian / Watsons
-            text = text.replace(/\bGUARD1AN\b/gi, 'GUARDIAN');
-            text = text.replace(/\bWATS0NS\b/gi, 'WATSONS');
-            text = text.replace(/\bWATSONS\b/gi, 'WATSONS');
-            
-            // Popular / Courts
-            text = text.replace(/\bP0PULAR\b/gi, 'POPULAR');
-            text = text.replace(/\bC0URTS\b/gi, 'COURTS');
-            
-            // McDonald's / KFC / Burger King
-            text = text.replace(/\bMcD0NALD'?S\b/gi, 'MCDONALDS');
-            text = text.replace(/\bMCDONALD'?S\b/gi, 'MCDONALDS');
-            text = text.replace(/\bKFC\b/gi, 'KFC');
-            text = text.replace(/\bBURGER\s*K1NG\b/gi, 'BURGER KING');
-            
-            // Uniqlo / Muji / Daiso
-            text = text.replace(/\bUN1QLO\b/gi, 'UNIQLO');
-            text = text.replace(/\bUNIQL0\b/gi, 'UNIQLO');
-            text = text.replace(/\bMUJ1\b/gi, 'MUJI');
-            text = text.replace(/\bDA1SO\b/gi, 'DAISO');
-            text = text.replace(/\bDAIS0\b/gi, 'DAISO');
-            
-            // Try to fix chunked text by detecting price patterns and adding line breaks
-            // Add line break before prices that look like: 1.23 or $1.23 or 12.34
-            text = text.replace(/(\d+\.\d{2})(?=\s+[A-Z])/g, '$1\n');
-            
-            // Add line break before common quantity patterns: 1pcs, 2x, 1kg
-            text = text.replace(/\s+(\d+(?:pcs|pc|x|kg|g|ml|l)\b)/gi, '\n$1 ');
-            
-            // Add line break before "Description" and similar headers
-            text = text.replace(/(Description|Item|Product|Qty)/gi, '\n$1');
-            
-            // Add line break before parentheses that often indicate new items
-            text = text.replace(/\)\s+([A-Z])/g, ')\n$1');
-            
-            // Normalize multiple spaces but preserve line breaks
-            text = text.replace(/ +/g, ' ');
-            text = text.replace(/\n\s+/g, '\n');
-            
-            return text;
-        }
-
         function normalizeMerchant(merchant, fullText) {
             // Normalize common merchant OCR variants using heuristics
             const t = (fullText || '').toUpperCase();
@@ -637,6 +546,7 @@
                 /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\b/i,
                 /Date[:\s]*(\d{1,2}\/\d{1,2}\/\d{2,4})/i
             ];
+            const fallbackDatePattern = /(\d{2})(\d{2})(\d{2,4})/; // DD MM YY(YY)
             
             for (const line of lines) {
                 for (const pattern of datePatterns) {
@@ -647,44 +557,29 @@
                     }
                 }
                 if (date) break;
-            }
+                
+                // Fallback: remove all non-digit characters
+                const digitOnlyLine = line.replace(/\D/g, ''); 
+                const matchDigitSeq = digitOnlyLine.match(/\d{8,10}/); // first 8-10 digit sequence
+                
+                if (matchDigitSeq) {
+                    const digits = matchDigitSeq[0]; // e.g. "237472026" or "23042026"    
+                    const matchFallback = digitOnlyLine.match(fallbackDatePattern);     
+                    if (matchFallback) {
+                        let d = parseInt(matchFallback[1], 10);
+                        let m = parseInt(matchFallback[2], 10);
+                        let y = parseInt(matchFallback[3], 10);
+                        
+                        // OCR correction rules: swap 7 ↔ 0 if month > 12
+                        if (m > 12 && m < 32) m = parseInt(matchFallback[2].replace('7','0'), 10);
 
-            // Fallback date parsing if not found yet
-            if (!date) {
-                const fallbackDatePattern = /(\d{2})(\d{2})(\d{2,4})/; // DDMMYY(YY)
-                const slashAs7Pattern = /\b(\d{1,2})7(\d{1,2})7(\d{2,4})\b/;
-
-                for (const line of lines) {
-                    // Try slash-as-7 pattern first, as it's more specific for cases like '237472026'
-                    let match = line.match(slashAs7Pattern);
-                    if (match) {
-                        let d = parseInt(match[1], 10);
-                        let m = parseInt(match[2], 10);
-                        let y = parseInt(match[3], 10);
+                        // Handle 2-digit year
                         if (y < 100) y += 2000;
 
-                        if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y > 2000 && y < 2100) {
-                            date = `${d.toString().padStart(2, '0')}/${m.toString().padStart(2, '0')}/${y}`;
-                            break; // Date found, exit fallback loop
-                        }
-                    }
-
-                    // Then try DDMMYYYY pattern on digit-only string
-                    const digitOnlyLine = line.replace(/\D/g, '');
-                    if (digitOnlyLine.length >= 6) {
-                        match = digitOnlyLine.match(fallbackDatePattern);
-                        if (match) {
-                            let d = parseInt(match[1], 10);
-                            let m = parseInt(match[2], 10);
-                            let y = parseInt(match[3], 10);
-
-                            // Handle 2-digit year
-                            if (y < 100) y += 2000;
-
-                            if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y > 2000 && y < 2100) {
-                                date = `${d.toString().padStart(2, '0')}/${m.toString().padStart(2, '0')}/${y}`;
-                                break; // Date found, exit fallback loop
-                            }
+                        // Only accept valid date
+                        if (d >=1 && d <= 31 && m >=1 && m <=12 && y > 2000 && y < 2100) {
+                            // Pad day and month to 2 digits
+                            date = `${d.toString().padStart(2,'0')}/${m.toString().padStart(2,'0')}/${y}`;
                         }
                     }
                 }
