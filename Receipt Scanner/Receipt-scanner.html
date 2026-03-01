@@ -113,6 +113,8 @@
 
         #imagePreview {
             max-width: 100%;
+            max-height: 60vh;
+            object-fit: contain;
             border-radius: 10px;
             display: none;
             box-shadow: 0 5px 15px rgba(0,0,0,0.2);
@@ -504,6 +506,10 @@
             text = text.replace(/\bTSETAN\b/gi, 'ISETAN');
             text = text.replace(/\b1SETAN\b/gi, 'ISETAN');
             text = text.replace(/\bISETAN\b/gi, 'ISETAN');
+
+            // Ichiban Boshi
+            text = text.replace(/\bTCHIBAN\b/gi, 'ICHIBAN');
+            text = text.replace(/\b1CHIBAN\b/gi, 'ICHIBAN');
             
             // FairPrice variations
             text = text.replace(/\bFa1rpr1ce\b/gi, 'FAIRPRICE');
@@ -562,7 +568,7 @@
             
             // Try to fix chunked text by detecting price patterns and adding line breaks
             // Add line break before prices that look like: 1.23 or $1.23 or 12.34
-            text.replace(/(\d+\.\d{2})(?=\s+[A-Z])/g, '$1\n');
+            text = text.replace(/(\d+\.\d{2})(?=\s+[A-Z])/g, '$1\n');
             
             // Add line break before common quantity patterns: 1pcs, 2x, 1kg
             text = text.replace(/\s+(\d+(?:pcs|pc|x|kg|g|ml|l)\b)/gi, '\n$1 ');
