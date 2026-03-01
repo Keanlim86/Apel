@@ -43,8 +43,8 @@
     </style>
 </head>
 <body>
-    <h1>Receipt Scanner — Auto-split Multi-Receipts</h1>
-    <p>Drop or select a PDF/image that contains one or more receipts on the same page. Click "Draw Boxes" to manually select receipts, draw boxes around each receipt, then click "OCR Selected".</p>
+    <h1>Receipt Scanner — Auto/Manual-split Multi-Receipts</h1>
+    <p>Instructions: Drop or select a PDF/image that contains one or more receipts on the same page. Click "Draw Boxes" to manually select receipts, draw boxes around each receipt, then click "OCR Selected".</p>
 
     <div class="controls">
         <input id="fileInput" type="file" accept="image/*,application/pdf" />
@@ -256,6 +256,7 @@
         drawModeBtn.addEventListener('click', ()=>{
             enableDrawMode(!drawMode);
             drawModeBtn.textContent = drawMode ? 'Drawing: ON' : 'Draw Boxes';
+            drawModeBtn.style.backgroundColor = drawMode ? 'green' : '';
             document.getElementById('showOverlay').checked = true;
             document.getElementById('overlayCanvas').style.display = 'block';
         });
