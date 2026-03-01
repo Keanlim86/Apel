@@ -14,7 +14,8 @@ function cleanOCRText(text) {
     // Ichiban Boshi
     text = text.replace(/\bTCHIBAN\b/gi, 'ICHIBAN');
     text = text.replace(/\b1CHIBAN\b/gi, 'ICHIBAN');
-    
+    text = text.replace(/\bICHIRAN BOSHI\b/gi, 'ICHIBAN BOSHI');
+
     // FairPrice variations
     text = text.replace(/\bFa1rpr1ce\b/gi, 'FAIRPRICE');
     text = text.replace(/\bFa1rprice\b/gi, 'FAIRPRICE');
@@ -69,6 +70,9 @@ function cleanOCRText(text) {
     text = text.replace(/\bMUJ1\b/gi, 'MUJI');
     text = text.replace(/\bDA1SO\b/gi, 'DAISO');
     text = text.replace(/\bDAIS0\b/gi, 'DAISO');
+    
+    // Common English words that might be misread
+    text = text.replace(/\bHITCHEN\b/gi, 'KITCHEN');
     
     // Try to fix chunked text by detecting price patterns and adding line breaks
     // Add line break before prices that look like: 1.23 or $1.23 or 12.34

@@ -13,7 +13,7 @@ function parseReceipt(text) {
         const letterCount = (line.match(/[a-zA-Z]/g) || []).length;
         const digitCount = (line.match(/\d/g) || []).length;
         if (letterCount > 3 && letterCount > digitCount * 2) {
-            merchant = line;
+            merchant = line.toUpperCase();
             break;
         }
     }
@@ -78,7 +78,37 @@ function parseReceipt(text) {
         }
     }
 
-    // 3️⃣ Extract prices from lines
+    // 3️⃣ Standardize date format to DD/MM/YYYY
+    if (date) {
+        try {
+            let day, month, year;
+            // Regex to specifically handle DD-MM-YYYY or DD/MM/YYYY
+            const dd_mm_yyyy = date.match(/^(\d{1,2})-\/-\/$/);
+
+            if (dd_mm_yyyy) {
+                day = parseInt(dd_mm_yyyy[1], 10);
+                month = parseInt(dd_mm_yyyy[2], 10);
+                year = parseInt(dd_mm_yyyy[3], 10);
+                if (year < 100) year += 2000; // Handle 2-digit year
+            } else {
+                // Fallback for other formats like YYYY-MM-DD or "Jan 01, 2024"
+                const d = new Date(date);
+                if (!isNaN(d.getTime())) {
+                    day = d.getDate();
+                    month = d.getMonth() + 1;
+                    year = d.getFullYear();
+                }
+            }
+
+            if (day && month && year) {
+                date = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+            }
+        } catch (e) {
+            console.warn("Could not standardize date format for:", date);
+        }
+    }
+
+    // 4️⃣ Extract prices from lines
     const pricePattern = /\$?\s*(\d+\.\d{2})\b/g;
     const spacedPricePattern = /\$?\s*\d+\s*\.\s*\d{2}\b/g;
     const subtotalPattern = /\bsub[\s-]?to?t?a?l\b/i;
