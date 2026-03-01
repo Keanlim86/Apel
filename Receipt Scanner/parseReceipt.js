@@ -37,6 +37,47 @@ function parseReceipt(text) {
         if (date) break;
     }
 
+    // Fallback date parsing if not found yet
+    if (!date) {
+        const fallbackDatePattern = /(\d{2})(\d{2})(\d{2,4})/; // DDMMYY(YY)
+        const slashAs7Pattern = /\b(\d{1,2})7(\d{1,2})7(\d{2,4})\b/;
+
+        for (const line of lines) {
+            // Try slash-as-7 pattern first, as it's more specific for cases like '237472026'
+            let match = line.match(slashAs7Pattern);
+            if (match) {
+                let d = parseInt(match[1], 10);
+                let m = parseInt(match[2], 10);
+                let y = parseInt(match[3], 10);
+                if (y < 100) y += 2000;
+
+                if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y > 2000 && y < 2100) {
+                    date = `${d.toString().padStart(2, '0')}/${m.toString().padStart(2, '0')}/${y}`;
+                    break; // Date found, exit fallback loop
+                }
+            }
+
+            // Then try DDMMYYYY pattern on digit-only string
+            const digitOnlyLine = line.replace(/\D/g, '');
+            if (digitOnlyLine.length >= 6) {
+                match = digitOnlyLine.match(fallbackDatePattern);
+                if (match) {
+                    let d = parseInt(match[1], 10);
+                    let m = parseInt(match[2], 10);
+                    let y = parseInt(match[3], 10);
+
+                    // Handle 2-digit year
+                    if (y < 100) y += 2000;
+
+                    if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y > 2000 && y < 2100) {
+                        date = `${d.toString().padStart(2, '0')}/${m.toString().padStart(2, '0')}/${y}`;
+                        break; // Date found, exit fallback loop
+                    }
+                }
+            }
+        }
+    }
+
     // 3️⃣ Extract prices from lines
     const pricePattern = /\$?\s*(\d+\.\d{2})\b/g;
     const spacedPricePattern = /\$?\s*\d+\s*\.\s*\d{2}\b/g;

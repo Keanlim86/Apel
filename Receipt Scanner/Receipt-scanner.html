@@ -637,7 +637,6 @@
                 /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\b/i,
                 /Date[:\s]*(\d{1,2}\/\d{1,2}\/\d{2,4})/i
             ];
-            const fallbackDatePattern = /(\d{2})(\d{2})(\d{2,4})/; // DD MM YY(YY)
             
             for (const line of lines) {
                 for (const pattern of datePatterns) {
@@ -648,29 +647,44 @@
                     }
                 }
                 if (date) break;
-                
-                // Fallback: remove all non-digit characters
-                const digitOnlyLine = line.replace(/\D/g, ''); 
-                const matchDigitSeq = digitOnlyLine.match(/\d{8,10}/); // first 8-10 digit sequence
-                
-                if (matchDigitSeq) {
-                    const digits = matchDigitSeq[0]; // e.g. "237472026" or "23042026"    
-                    const matchFallback = digitOnlyLine.match(fallbackDatePattern);     
-                    if (matchFallback) {
-                        let d = parseInt(matchFallback[1], 10);
-                        let m = parseInt(matchFallback[2], 10);
-                        let y = parseInt(matchFallback[3], 10);
-                        
-                        // OCR correction rules: swap 7 ↔ 0 if month > 12
-                        if (m > 12 && m < 32) m = parseInt(matchFallback[2].replace('7','0'), 10);
+            }
 
-                        // Handle 2-digit year
+            // Fallback date parsing if not found yet
+            if (!date) {
+                const fallbackDatePattern = /(\d{2})(\d{2})(\d{2,4})/; // DDMMYY(YY)
+                const slashAs7Pattern = /\b(\d{1,2})7(\d{1,2})7(\d{2,4})\b/;
+
+                for (const line of lines) {
+                    // Try slash-as-7 pattern first, as it's more specific for cases like '237472026'
+                    let match = line.match(slashAs7Pattern);
+                    if (match) {
+                        let d = parseInt(match[1], 10);
+                        let m = parseInt(match[2], 10);
+                        let y = parseInt(match[3], 10);
                         if (y < 100) y += 2000;
 
-                        // Only accept valid date
-                        if (d >=1 && d <= 31 && m >=1 && m <=12 && y > 2000 && y < 2100) {
-                            // Pad day and month to 2 digits
-                            date = `${d.toString().padStart(2,'0')}/${m.toString().padStart(2,'0')}/${y}`;
+                        if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y > 2000 && y < 2100) {
+                            date = `${d.toString().padStart(2, '0')}/${m.toString().padStart(2, '0')}/${y}`;
+                            break; // Date found, exit fallback loop
+                        }
+                    }
+
+                    // Then try DDMMYYYY pattern on digit-only string
+                    const digitOnlyLine = line.replace(/\D/g, '');
+                    if (digitOnlyLine.length >= 6) {
+                        match = digitOnlyLine.match(fallbackDatePattern);
+                        if (match) {
+                            let d = parseInt(match[1], 10);
+                            let m = parseInt(match[2], 10);
+                            let y = parseInt(match[3], 10);
+
+                            // Handle 2-digit year
+                            if (y < 100) y += 2000;
+
+                            if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y > 2000 && y < 2100) {
+                                date = `${d.toString().padStart(2, '0')}/${m.toString().padStart(2, '0')}/${y}`;
+                                break; // Date found, exit fallback loop
+                            }
                         }
                     }
                 }

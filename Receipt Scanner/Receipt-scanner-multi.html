@@ -6,25 +6,39 @@
     <title>Receipt Scanner — Multi-Receipt (Auto Split)</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
     </script>
     <script src="parseReceipt.js"></script>
     <style>
-        body { font-family: Arial, Helvetica, sans-serif; padding: 18px; max-width: 1100px; margin: 0 auto; }
-        h1 { color: #333; }
+        body { font-family: Arial, Helvetica, sans-serif; padding: 18px; max-width: 95vw; margin: 0 auto; background-color: #0d1b2a; color: #e0e1dd; }
+        h1, h3 { color: #fff; }
+        p { color: #ccc; }
         .controls { display:flex; gap:10px; align-items:center; margin-bottom:10px }
-        #canvasWrap { position:relative; border:1px solid #ddd; width:fit-content; max-width:100%; margin:0 auto 10px auto; }
+        #canvasWrap { position:relative; border:1px solid #444; width:fit-content; max-width:100%; margin:0 auto 10px auto; }
         canvas { display:block; max-width:100%; max-height:70vh; width:auto; height:auto; }
         #overlayCanvas { position:absolute; left:0; top:0; z-index:10; width:100%; height:100%; max-height:none; }
         .control-row { display:flex; gap:12px; align-items:center }
         #boxesPreview { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px }
-        .boxThumb { width:120px; height:120px; object-fit:cover; border:1px solid #ccc; border-radius:6px }
+        .boxThumb { width:120px; height:120px; object-fit:cover; border:1px solid #444; border-radius:6px }
         .btn { padding:8px 12px; background:#3366ff; color:white; border:none; border-radius:6px; cursor:pointer }
         .btn:disabled { opacity:0.5 }
         #debug { background:#111; color:#eee; padding:8px; border-radius:6px; font-family: monospace; max-height:220px; overflow:auto }
         table { width:100%; border-collapse: collapse; margin-top:12px }
-        th,td { border:1px solid #ddd; padding:8px; }
+        th,td { border:1px solid #444; padding:8px; }
+        th { background-color: #1b263b; }
+
+        .main-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+            gap: 24px;
+            margin-top: 20px;
+        }
+        .right-column {
+            display: flex;
+            flex-direction: column;
+        }
     </style>
 </head>
 <body>
@@ -34,32 +48,46 @@
     <div class="controls">
         <input id="fileInput" type="file" accept="image/*,application/pdf" />
         <button id="drawModeBtn" class="btn">Draw Boxes</button>
+        <div id="pageControls" style="display:none; gap:10px; align-items:center; margin-left:10px; border-left:1px solid #444; padding-left:10px;">
+            <button id="prevPageBtn" class="btn">Prev</button>
+            <span id="pageIndicator" style="color:#fff; font-weight:bold">1/1</span>
+            <button id="nextPageBtn" class="btn">Next</button>
+        </div>
         <button id="clearBoxesBtn" class="btn">Clear Boxes</button>
         <button id="ocrSelectedBtn" class="btn" disabled>OCR Selected</button>
+        <button id="clearResultsBtn" class="btn">Clear Results</button>
         <button id="exportCSV" class="btn" disabled>Export Summary CSV</button>
-        <span id="selectedFile" style="margin-left:12px;color:#333;font-weight:600;"></span>
+        <button id="exportXLSX" class="btn" disabled>Export Summary XLSX</button>
+        <span id="selectedFile" style="margin-left:12px;color:#e0e1dd;font-weight:600;"></span>
     </div>
 
     <div class="controls" style="margin-top:8px; gap:8px; align-items:center;">
         <label style="font-size:13px;"><input id="showOverlay" type="checkbox" checked> Show overlay</label>
     </div>
 
-    <div id="canvasWrap">
-        <canvas id="pageCanvas"></canvas>
-        <canvas id="overlayCanvas"></canvas>
-    </div>
-    <div id="boxesPreview"></div>
+    <div class="main-layout">
+        <div class="left-column">
+            <div id="canvasWrap">
+                <canvas id="pageCanvas"></canvas>
+                <canvas id="overlayCanvas"></canvas>
+            </div>
+        </div>
+        <div class="right-column">
+            <h3>Boxes</h3>
+            <div id="boxesPreview"></div>
 
-    <h3>Results</h3>
-    <div id="resultsWrap">
-        <table id="resultsTable">
-            <thead><tr><th>#</th><th>Page</th><th>Merchant</th><th>Date</th><th>Subtotal</th><th>GST</th><th>Total</th></tr></thead>
-            <tbody></tbody>
-        </table>
-    </div>
+            <h3>Results</h3>
+            <div id="resultsWrap">
+                <table id="resultsTable">
+                    <thead><tr><th>#</th><th>Page</th><th>Merchant</th><th>Date</th><th>Subtotal</th><th>GST</th><th>Total</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
 
-    <h3>Debug</h3>
-    <div id="debug"></div>
+            <h3>Debug</h3>
+            <div id="debug"></div>
+        </div>
+    </div>
 
     <script>
         function appendDebug(msg) {
@@ -79,6 +107,37 @@
         let results = [];
         let currentPageIndex = 1;
         let drawMode = false;
+
+        const pageControls = document.getElementById('pageControls');
+        const pageIndicator = document.getElementById('pageIndicator');
+
+        document.getElementById('prevPageBtn').addEventListener('click', () => changePage(-1));
+        document.getElementById('nextPageBtn').addEventListener('click', () => changePage(1));
+
+        function changePage(delta) {
+            const newIndex = currentPageIndex + delta;
+            if (newIndex < 1 || newIndex > pageCanvases.length) return;
+            
+            currentPageIndex = newIndex;
+            pageImageCanvas = pageCanvases[currentPageIndex-1];
+            canvas.width = pageImageCanvas.width;
+            canvas.height = pageImageCanvas.height;
+            ctx.drawImage(pageImageCanvas, 0, 0);
+            
+            // Clear boxes to avoid misalignment on new page
+            clearDetections();
+            updatePageControls();
+            appendDebug('Switched to Page ' + currentPageIndex);
+        }
+
+        function updatePageControls() {
+            if (pageCanvases.length > 1) {
+                pageControls.style.display = 'flex';
+                pageIndicator.textContent = currentPageIndex + ' / ' + pageCanvases.length;
+            } else {
+                pageControls.style.display = 'none';
+            }
+        }
 
         fileInput.addEventListener('change', async (e) => {
             const f = e.target.files[0];
@@ -147,6 +206,7 @@
                 canvas.width = pageImageCanvas.width; 
                 canvas.height = pageImageCanvas.height; 
                 ctx.drawImage(pageImageCanvas,0,0);
+                updatePageControls();
                 appendDebug('Rendered ' + pageCanvases.length + ' page(s) from PDF');
             } else {
                 const url = await fileToDataURL(file);
@@ -164,6 +224,7 @@
                 pageImageCanvas.height = canvas.height; 
                 pageImageCanvas.getContext('2d').drawImage(canvas,0,0);
                 pageCanvases = [];
+                updatePageControls();
             }
             appendDebug('Rendered to canvas: ' + canvas.width + 'x' + canvas.height);
         }
@@ -189,6 +250,7 @@
         const drawModeBtn = document.getElementById('drawModeBtn');
         const clearBoxesBtn = document.getElementById('clearBoxesBtn');
         const ocrSelectedBtn = document.getElementById('ocrSelectedBtn');
+        const clearResultsBtn = document.getElementById('clearResultsBtn');
         
         drawModeBtn.addEventListener('click', ()=>{
             enableDrawMode(!drawMode);
@@ -199,6 +261,13 @@
         
         clearBoxesBtn.addEventListener('click', ()=>{ clearDetections(); });
         ocrSelectedBtn.addEventListener('click', ()=>{ ocrSelectedBoxes(); });
+        clearResultsBtn.addEventListener('click', () => {
+            results = [];
+            document.querySelector('#resultsTable tbody').innerHTML = '';
+            document.getElementById('exportXLSX').disabled = true;
+            document.getElementById('exportCSV').disabled = true;
+            appendDebug('Results cleared.');
+        });
 
         function drawOverlayBoxes(boxes, color='lime') {
             const ov = document.getElementById('overlayCanvas'); 
@@ -376,7 +445,62 @@
                 await new Promise(r=>setTimeout(r,120));
             }
             document.getElementById('exportCSV').disabled = results.length === 0;
+            document.getElementById('exportXLSX').disabled = results.length === 0;
             appendDebug('Finished OCR. Total results: ' + results.length);
+        }
+
+        document.getElementById('exportXLSX').addEventListener('click', exportSummaryXLSX);
+
+        function exportSummaryXLSX() {
+            if (results.length === 0) {
+                alert('No results to export');
+                return;
+            }
+
+            // Per user request, check for XLSX library and fallback to CSV if not found
+            if (typeof XLSX === 'undefined') {
+                alert('Excel library (XLSX) not loaded. Exporting as CSV instead.');
+                document.getElementById('exportCSV').click();
+                return;
+            }
+
+            try {
+                const wb = XLSX.utils.book_new();
+                
+                const data = [
+                    ['Page', 'Date', 'Merchant', 'Subtotal', 'GST', 'Total']
+                ];
+                
+                results.forEach(r => {
+                    data.push([ r.page || '', r.date, r.merchant, r.subtotal, r.gst, r.total ]);
+                });
+                
+                const ws = XLSX.utils.aoa_to_sheet(data);
+                
+                ws['!cols'] = [
+                    { wch: 5 },  // Page
+                    { wch: 12 }, // Date
+                    { wch: 25 }, // Merchant
+                    { wch: 12 }, // Subtotal
+                    { wch: 12 }, // GST
+                    { wch: 12 }  // Total
+                ];
+                
+                const range = XLSX.utils.decode_range(ws['!ref']);
+                for (let row = 1; row <= range.e.r; row++) {
+                    for (let col = 3; col <= 5; col++) { // Subtotal, GST, Total
+                        const cellAddress = XLSX.utils.encode_cell({ r: row, c: col });
+                        if (ws[cellAddress]) ws[cellAddress].z = '$#,##0.00';
+                    }
+                }
+                
+                XLSX.utils.book_append_sheet(wb, ws, 'Receipts Summary');
+                XLSX.writeFile(wb, 'receipts_summary.xlsx');
+                appendDebug('Summary XLSX export successful');
+            } catch (error) {
+                appendDebug('Error exporting XLSX: ' + error.message);
+                alert('Error exporting to Excel: ' + error.message + '. Please try exporting as CSV.');
+            }
         }
 
         setupOverlayDrawing();
