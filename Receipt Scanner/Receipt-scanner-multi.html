@@ -10,6 +10,7 @@
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
     </script>
+    <script src="sgMerchants.js"></script>
     <script src="parseReceipt.js"></script>
     <script src="cleanOCR.js"></script>
     <style>
@@ -25,10 +26,23 @@
         .boxThumb { width:120px; height:120px; object-fit:cover; border:1px solid #444; border-radius:6px }
         .btn { padding:8px 12px; background:#3366ff; color:white; border:none; border-radius:6px; cursor:pointer }
         .btn:disabled { opacity:0.5 }
-        #debug { background:#111; color:#eee; padding:8px; border-radius:6px; font-family: monospace; max-height:220px; overflow:auto }
+        #debug { background:#111; color:#eee; padding:8px; border-radius:6px; font-family: monospace; max-height:220px; overflow:auto; white-space: pre-wrap; }
         table { width:100%; border-collapse: collapse; margin-top:12px }
         th,td { border:1px solid #444; padding:8px; }
         th { background-color: #1b263b; }
+        .conf-high { color: #4ade80; font-weight: 600; }
+        .conf-med { color: #facc15; font-weight: 600; }
+        .conf-low { color: #f87171; font-weight: 600; }
+
+        .last-updated {
+            position: fixed;
+            left: 12px;
+            bottom: 10px;
+            font-size: 12px;
+            color: #8899aa;
+            z-index: 999;
+            pointer-events: none;
+        }
 
         .main-layout {
             display: grid;
@@ -43,6 +57,7 @@
     </style>
 </head>
 <body>
+    <div class="last-updated">Last Updated on 25 Aug 2026</div>
     <h1>Receipt Scanner — Auto/Manual-split Multi-Receipts</h1>
     <p>Instructions: Drop or select a PDF/image that contains one or more receipts on the same page. Click "Draw Boxes" to manually select receipts, draw boxes around each receipt, then click "OCR Selected".</p>
 
@@ -80,7 +95,7 @@
             <h3>Results</h3>
             <div id="resultsWrap">
                 <table id="resultsTable">
-                    <thead><tr><th>#</th><th>Page</th><th>Merchant</th><th>Date</th><th>Subtotal</th><th>GST</th><th>Total</th></tr></thead>
+                    <thead><tr><th>#</th><th>Page</th><th>Merchant</th><th>Date</th><th>Subtotal</th><th>GST</th><th>Total</th><th>Confidence</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
@@ -413,39 +428,76 @@
         }
 
         async function ocrSelectedBoxes() {
-            if (!detections || detections.length===0) { 
-                appendDebug('No boxes to OCR'); 
-                return; 
+            if (!detections || detections.length===0) {
+                appendDebug('No boxes to OCR');
+                return;
             }
+
+            // Prevent overlapping runs: disable the controls that would let the
+            // user start a second batch, or clear/redraw boxes, while this one
+            // is still in progress. Without this, a second click (or a
+            // Clear Boxes click mid-run) races the loop below over the same
+            // shared `detections`/`results` arrays.
+            ocrSelectedBtn.disabled = true;
+            clearBoxesBtn.disabled = true;
+            drawModeBtn.disabled = true;
+
             const tbody = document.querySelector('#resultsTable tbody');
             const pageCanvas = (pageCanvases?.length) ? pageCanvases[currentPageIndex-1] : pageImageCanvas;
-            
-            for (let i=0;i<detections.length;i++) {
-                const b = detections[i]; 
-                const idx = i+1; 
-                appendDebug('OCR box ' + idx + '/' + detections.length);
-                const crop = cropCanvas(pageCanvas, b, 10);
-                const enhanced = autoCropAndEnhance(crop, 1500);
-                preprocessCanvas(enhanced);
-                
-                try {
-                    const res = await ocrCanvas(enhanced, (q)=> appendDebug('OCR progress: ' + Math.round(q*100) + '%'));
-                    appendDebug('OCR text (box ' + idx + '): ' + (res.text || '').slice(0,80).replace(/\n/g,' '));
-                    const cleaned = cleanOCRText(res.text || ''); 
-                    const parsed = parseReceipt(cleaned); 
-                    parsed.page = currentPageIndex; 
-                    results.push(parsed);
-                    const tr = document.createElement('tr'); 
-                    tr.innerHTML = `<td>${results.length}</td><td>${currentPageIndex}</td><td>${parsed.merchant}</td><td>${parsed.date}</td><td>${parsed.subtotal.toFixed(2)}</td><td>${parsed.gst.toFixed(2)}</td><td>${parsed.total.toFixed(2)}</td>`; 
-                    tbody.appendChild(tr);
-                } catch (err) {
-                    appendDebug('OCR error (box ' + idx + '): ' + err.message);
-                    const tr = document.createElement('tr'); 
-                    tr.innerHTML = `<td>?</td><td>${currentPageIndex}</td><td colspan="3">Error: ${err.message}</td>`; 
-                    tbody.appendChild(tr);
+
+            try {
+                for (let i=0;i<detections.length;i++) {
+                    const b = detections[i];
+                    const idx = i+1;
+                    appendDebug('OCR box ' + idx + '/' + detections.length);
+
+                    // Crop/enhance/preprocess are inside the try now too, so a
+                    // failure on one box (e.g. a blank/near-white selection)
+                    // logs an error row and moves on instead of throwing out
+                    // of the whole loop and silently killing the rest of the batch.
+                    try {
+                        const crop = cropCanvas(pageCanvas, b, 10);
+                        const enhanced = autoCropAndEnhance(crop, 1500);
+                        preprocessCanvas(enhanced);
+
+                        const res = await ocrCanvas(enhanced, (q)=> appendDebug('OCR progress: ' + Math.round(q*100) + '%'));
+                        // Full raw/cleaned text + parsed JSON (not just a
+                        // truncated preview), so a wrong field can actually
+                        // be diagnosed from the debug panel instead of
+                        // guessing from an 80-char snippet.
+                        appendDebug('OCR raw text (box ' + idx + '): ' + (res.text || ''));
+                        // Tesseract's page-level mean confidence (0-100), so
+                        // low-quality scans are visible instead of silently
+                        // producing a plausible-looking-but-wrong result.
+                        const confidence = typeof res.confidence === 'number' ? res.confidence : null;
+                        appendDebug('OCR confidence (box ' + idx + '): ' + (confidence != null ? confidence.toFixed(1) + '%' : 'n/a'));
+                        const cleaned = cleanOCRText(res.text || '');
+                        appendDebug('OCR cleaned text (box ' + idx + '): ' + cleaned);
+                        const parsed = parseReceipt(cleaned);
+                        parsed.page = currentPageIndex;
+                        parsed.confidence = confidence;
+                        appendDebug('Parsed receipt (box ' + idx + '): ' + JSON.stringify(parsed));
+                        results.push(parsed);
+                        const confLabel = confidence != null ? confidence.toFixed(0) + '%' : 'n/a';
+                        const confClass = confidence == null ? '' : confidence >= 80 ? 'conf-high' : confidence >= 50 ? 'conf-med' : 'conf-low';
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `<td>${results.length}</td><td>${currentPageIndex}</td><td>${parsed.merchant}</td><td>${parsed.date}</td><td>${parsed.subtotal.toFixed(2)}</td><td>${parsed.gst.toFixed(2)}</td><td>${parsed.total.toFixed(2)}</td><td class="${confClass}">${confLabel}</td>`;
+                        tbody.appendChild(tr);
+                    } catch (err) {
+                        appendDebug('OCR error (box ' + idx + '): ' + err.message);
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `<td>?</td><td>${currentPageIndex}</td><td colspan="6">Error: ${err.message}</td>`;
+                        tbody.appendChild(tr);
+                    }
+                    await new Promise(r=>setTimeout(r,120));
                 }
-                await new Promise(r=>setTimeout(r,120));
+            } finally {
+                // Re-enable controls even if something above threw unexpectedly.
+                clearBoxesBtn.disabled = false;
+                drawModeBtn.disabled = false;
+                ocrSelectedBtn.disabled = detections.length === 0;
             }
+
             document.getElementById('exportCSV').disabled = results.length === 0;
             document.getElementById('exportXLSX').disabled = results.length === 0;
             appendDebug('Finished OCR. Total results: ' + results.length);
@@ -472,13 +524,13 @@
                 const data = [
                     ['Page', 'Date', 'Merchant', 'Subtotal', 'GST', 'Total']
                 ];
-                
+
                 results.forEach(r => {
                     data.push([ r.page || '', r.date, r.merchant, r.subtotal, r.gst, r.total ]);
                 });
-                
+
                 const ws = XLSX.utils.aoa_to_sheet(data);
-                
+
                 ws['!cols'] = [
                     { wch: 5 },  // Page
                     { wch: 12 }, // Date
@@ -487,7 +539,7 @@
                     { wch: 12 }, // GST
                     { wch: 12 }  // Total
                 ];
-                
+
                 const range = XLSX.utils.decode_range(ws['!ref']);
                 for (let row = 1; row <= range.e.r; row++) {
                     for (let col = 3; col <= 5; col++) { // Subtotal, GST, Total
@@ -551,6 +603,15 @@
                 }
             }
             
+            // If nothing dark enough was found (a blank/near-white box, or a
+            // selection that missed the receipt), minX/maxX and minY/maxY are
+            // still at their initial inverted values here. Using them as-is
+            // would produce a negative crop width/height, which throws when
+            // applied to a canvas — so fall back to the full box instead.
+            if (maxX < minX || maxY < minY) {
+                minX = 0; minY = 0; maxX = canvas.width; maxY = canvas.height;
+            }
+
             const padding = 10;
             minX = Math.max(0, minX - padding);
             minY = Math.max(0, minY - padding);

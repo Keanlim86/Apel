@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "lastUpdated": "2025-03",
+  "version": "1.0.3",
+  "lastUpdated": "2026-08",
   "merchants": {
     "supermarkets_grocery": [
       "NTUC FairPrice",
@@ -70,9 +70,11 @@
       "Luckin Coffee",
       "%Arabica",
       "Compresso",
-      "Flash Coffee"
+      "Flash Coffee",
+      "Chagee"
     ],
     "hk_style_chinese": [
+      "Tsui Wah @ JEM",
       "Tsui Wah",
       "Tasty Congee & Noodle Wantun Shop",
       "Ho Hung Kee",
@@ -95,7 +97,8 @@
       "Tim Ho Wan",
       "Din Tai Fung",
       "Soup Restaurant",
-      "Peach Garden"
+      "Peach Garden",
+      "LeMa Dumpling"
     ],
     "japanese": [
       "Ramen Keisuke",

@@ -81,8 +81,13 @@ function cleanOCRText(text) {
     // Add line break before common quantity patterns: 1pcs, 2x, 1kg
     text = text.replace(/\s+(\d+(?:pcs|pc|x|kg|g|ml|l)\b)/gi, '\n$1 ');
     
-    // Add line break before "Description" and similar headers
-    text = text.replace(/(Description|Item|Product|Qty)/gi, '\n$1');
+    // Add line break before "Description" and similar headers.
+    // Word-bounded so this only matches the standalone header word (e.g. a
+    // table header "Item Qty Price") and NOT "Item" as a mere substring of
+    // another word — without \b this used to match inside "items" too (as
+    // in "Total 1 items 2.70"), splitting that line right before the price
+    // and silently dropping the receipt's total.
+    text = text.replace(/\b(Description|Item|Product|Qty)\b/gi, '\n$1');
     
     // Add line break before parentheses that often indicate new items
     text = text.replace(/\)\s+([A-Z])/g, ')\n$1');
@@ -92,4 +97,65 @@ function cleanOCRText(text) {
     text = text.replace(/\n\s+/g, '\n');
     
     return text;
+}
+
+// Levenshtein (edit) distance between two strings — counts the minimum
+// number of single-character insertions/deletions/substitutions needed to
+// turn `a` into `b`. Used by fuzzyMatchMerchant() below for merchant names
+// not covered by the exact regex rules above.
+function levenshteinDistance(a, b) {
+    if (a === b) return 0;
+    const al = a.length, bl = b.length;
+    if (al === 0) return bl;
+    if (bl === 0) return al;
+    const matrix = Array.from({ length: al + 1 }, () => new Array(bl + 1));
+    for (let i = 0; i <= al; i++) matrix[i][0] = i;
+    for (let j = 0; j <= bl; j++) matrix[0][j] = j;
+    for (let i = 1; i <= al; i++) {
+        for (let j = 1; j <= bl; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            matrix[i][j] = Math.min(
+                matrix[i - 1][j] + 1,       // deletion
+                matrix[i][j - 1] + 1,       // insertion
+                matrix[i - 1][j - 1] + cost // substitution
+            );
+        }
+    }
+    return matrix[al][bl];
+}
+
+// Fuzzy-match a candidate merchant string against a reference list of known
+// merchant names (see sgMerchants.js), catching OCR misreads that the exact
+// regex rules in cleanOCRText() don't cover. Returns the closest reference
+// name if it's within a length-scaled edit-distance tolerance, else null.
+function fuzzyMatchMerchant(candidate, merchantList, maxDistanceRatio = 0.3) {
+    if (!candidate || !merchantList || !merchantList.length) return null;
+    let c = candidate.toUpperCase().trim();
+    // Strip stray non-alphanumeric junk from both ends (e.g. OCR misreading
+    // a receipt's decorative border as symbols glued to the real text, like
+    // "H LUCKIN COFFEE }" picking up a trailing "}") so it doesn't eat into
+    // the edit-distance tolerance below. Doesn't help with a stray *letter*
+    // stuck on either end (that's a separate, unhandled case).
+    c = c.replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '');
+    if (c.length < 3) return null; // too short to fuzzy-match reliably
+
+    let best = null;
+    let bestDist = Infinity;
+
+    for (const name of merchantList) {
+        const n = name.toUpperCase();
+
+        // Skip candidates whose length is wildly different from the
+        // reference name — avoids nonsense matches on short/long lines.
+        if (Math.abs(n.length - c.length) > Math.max(3, n.length * 0.5)) continue;
+
+        const dist = levenshteinDistance(c, n);
+        const maxAllowed = Math.max(2, Math.floor(n.length * maxDistanceRatio));
+        if (dist <= maxAllowed && dist < bestDist) {
+            bestDist = dist;
+            best = name;
+        }
+    }
+
+    return best;
 }

@@ -115,6 +115,12 @@ function parseReceipt(text) {
     const subtotalVariants = /\b(subfotal|subtatal|subt0tal|sub-total)\b/i;
     const totalPattern = /\btotal\b/i;
     const taxPattern = /\b(G[S5]T|G5T|GST|65T|included|incl|Inc\.\s*9%\s*GST|GST\s*9%)\b/i;
+    // Matches adjustment lines like "Total Discount -3.30". These contain
+    // the word "total" too, so without this check whichever of "Total
+    // Discount" or the real "Total" line happens to come last in the OCR'd
+    // text (not necessarily the receipt's printed order) would silently
+    // overwrite the correct total.
+    const discountPattern = /\bdiscount(s)?\b/i;
 
     // Helper: fuzzy subtotal detection
     function isLikelySubtotal(line) {
@@ -189,6 +195,11 @@ function parseReceipt(text) {
             if (taxPattern.test(lowerLine)) {
                 gst = price;
             }
+            // Discount/adjustment lines aren't the total — skip them so they
+            // can never be picked up by the totalPattern check below.
+            else if (discountPattern.test(lowerLine)) {
+                // intentionally not classified as subtotal/total/item
+            }
             // Check for subtotal (only set on first match)
             else if (isLikelySubtotal(lowerLine)) {
                 if (!subtotal) subtotal = price;
@@ -205,5 +216,34 @@ function parseReceipt(text) {
         total = subtotal;
     }
 
+    // 5️⃣ Normalize merchant (fix known OCR variants missed by cleanOCR.js)
+    merchant = normalizeMerchant(merchant, text);
+
     return { merchant, date, subtotal, gst, total };
+}
+
+function normalizeMerchant(merchant, fullText) {
+    // Normalize common merchant OCR variants using heuristics
+    const t = (fullText || '').toUpperCase();
+    let normalized = merchant;
+
+    // ISETAN variants seen in OCR: ISETAN, TSETAN, 1SETAN, IBETAN, IBETaN (from PDFs)
+    if (/ISETAN|TSETAN|1SETAN|IBETAN|I\s*B\s*E\s*T\s*A\s*N/gi.test(t)) {
+        normalized = /SINGAPORE/i.test(t) ? 'ISETAN SINGAPORE' : 'ISETAN';
+    }
+
+    // If merchant was just 'SINGAPORE' but text contains ISETAN-like tokens, prefer the full name
+    if (/^SINGAPORE$/i.test(merchant) && /ISETAN|TSETAN|1SETAN|IBETAN/i.test(t)) {
+        normalized = 'ISETAN SINGAPORE';
+    }
+
+    // Fuzzy fallback against the full Singapore merchant reference list
+    // (sgMerchants.js), for misreads not covered by the rules above.
+    if (normalized === merchant && typeof SG_MERCHANTS !== 'undefined' && typeof fuzzyMatchMerchant === 'function') {
+        const fuzzyMatch = fuzzyMatchMerchant(normalized, SG_MERCHANTS);
+        if (fuzzyMatch) normalized = fuzzyMatch.toUpperCase();
+    }
+
+    if (normalized !== merchant) console.log('Merchant normalized from', merchant, 'to', normalized);
+    return normalized;
 }

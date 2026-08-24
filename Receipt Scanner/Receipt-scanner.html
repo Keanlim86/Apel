@@ -8,6 +8,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <!-- PDF.js library for rendering PDFs to canvas -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="sgMerchants.js"></script>
     <script src="cleanOCR.js"></script>
     <script>
         // Configure PDF.js worker
@@ -163,6 +164,20 @@
             margin-bottom: 10px;
         }
 
+        .conf-high { color: #16a34a; font-weight: 700; }
+        .conf-med { color: #ca8a04; font-weight: 700; }
+        .conf-low { color: #dc2626; font-weight: 700; }
+
+        .last-updated {
+            position: fixed;
+            left: 12px;
+            bottom: 10px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.85);
+            z-index: 999;
+            pointer-events: none;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -223,6 +238,7 @@
     </style>
 </head>
 <body>
+    <div class="last-updated">Last Updated on 25 Aug 2026</div>
     <div class="container">
         <div class="header">
             <h1>📄 Receipt Scanner</h1>
@@ -264,6 +280,11 @@
                 <div class="info-card">
                     <h3>Date</h3>
                     <p id="date">-</p>
+                </div>
+
+                <div class="info-card">
+                    <h3>OCR Confidence</h3>
+                    <p id="confidence">-</p>
                 </div>
 
                 <div>
@@ -484,6 +505,11 @@
                 const text = cleanOCRText(result.data.text);
                 appendDebug('OCR cleaned text: ' + text);
                 receiptData = parseReceipt(text);
+                // Tesseract's page-level mean confidence (0-100) — surfaced
+                // so a low-quality scan is visible instead of looking as
+                // trustworthy as a clean one.
+                receiptData.confidence = (result.data && typeof result.data.confidence === 'number') ? result.data.confidence : null;
+                appendDebug('OCR confidence: ' + (receiptData.confidence != null ? receiptData.confidence.toFixed(1) + '%' : 'n/a'));
                 appendDebug('Parsed receipt: ' + JSON.stringify(receiptData));
                 displayResults(receiptData);
 
@@ -508,6 +534,13 @@
             // If merchant was just 'SINGAPORE' but text contains ISETAN-like tokens, prefer the full name
             if (/^SINGAPORE$/i.test(merchant) && /ISETAN|TSETAN|1SETAN|IBETAN/i.test(t)) {
                 normalized = 'ISETAN SINGAPORE';
+            }
+
+            // Fuzzy fallback against the full Singapore merchant reference list
+            // (sgMerchants.js), for misreads not covered by the rules above.
+            if (normalized === merchant && typeof SG_MERCHANTS !== 'undefined' && typeof fuzzyMatchMerchant === 'function') {
+                const fuzzyMatch = fuzzyMatchMerchant(normalized, SG_MERCHANTS);
+                if (fuzzyMatch) normalized = fuzzyMatch.toUpperCase();
             }
 
             if (normalized !== merchant) console.log('Merchant normalized from', merchant, 'to', normalized);
@@ -713,6 +746,12 @@
             const subtotalVariants = /\b(subfotal|subtatal|subt0tal|sub-total)\b/i;
             const totalPattern = /\btotal\b/i;
             const taxPattern = /\b(G[S5]T|G5T|GST|65T|included|incl|Inc\.\s*9%\s*GST|GST\s*9%)\b/i; // fuzzy GST/tax
+            // Matches adjustment lines like "Total Discount -3.30". These
+            // contain the word "total" too, so without this check whichever
+            // of "Total Discount" or the real "Total" line happens to come
+            // last in the OCR'd text (not necessarily the receipt's printed
+            // order) would silently overwrite the correct total.
+            const discountPattern = /\bdiscount(s)?\b/i;
 
             // Better fuzzy detection for 'subtotal' to catch OCR variants like 'subiotal'
             function levenshtein(a, b) {
@@ -763,6 +802,9 @@
 
                     if (taxPattern.test(lowerLine)) {
                         gst = price;
+                    } else if (discountPattern.test(lowerLine)) {
+                        // Discount/adjustment lines aren't the total — skip
+                        // so they can't be picked up by totalPattern below.
                     } else if (isLikelySubtotal(lowerLine)) {
                         if (!subtotal) subtotal = price;
                     } else if (totalPattern.test(lowerLine) && !isLikelySubtotal(lowerLine)) {
@@ -833,6 +875,14 @@
                         // GST / tax
                         if (taxPattern.test(lowerLine)) {
                             gst = price;
+                            continue;
+                        }
+
+                        // Discount/adjustment lines (e.g. "Total Discount
+                        // -3.30") aren't the receipt's actual total — skip
+                        // them so OCR line order can't let a discount line
+                        // overwrite the real total below.
+                        if (discountPattern.test(lowerLine)) {
                             continue;
                         }
 
@@ -1104,6 +1154,15 @@
             document.getElementById('merchant').textContent = data.merchant;
             document.getElementById('date').textContent = data.date;
 
+            const confidenceEl = document.getElementById('confidence');
+            confidenceEl.className = '';
+            if (data.confidence != null) {
+                confidenceEl.textContent = data.confidence.toFixed(0) + '%';
+                confidenceEl.classList.add(data.confidence >= 80 ? 'conf-high' : data.confidence >= 50 ? 'conf-med' : 'conf-low');
+            } else {
+                confidenceEl.textContent = 'n/a';
+            }
+
             const tbody = document.getElementById('itemsBody');
             tbody.innerHTML = '';
 
@@ -1182,7 +1241,7 @@
                 const data = [
                     ['Merchant', 'Date', 'Item', 'Price']
                 ];
-                
+
                 receiptData.items.forEach(item => {
                     data.push([
                         receiptData.merchant,
@@ -1191,7 +1250,7 @@
                         item.price
                     ]);
                 });
-                
+
                 // Add total row
                 data.push([
                     receiptData.merchant,
@@ -1199,9 +1258,9 @@
                     'TOTAL',
                     receiptData.total
                 ]);
-                
+
                 const ws = XLSX.utils.aoa_to_sheet(data);
-                
+
                 // Set column widths
                 ws['!cols'] = [
                     { wch: 20 }, // Merchant
@@ -1209,13 +1268,13 @@
                     { wch: 40 }, // Item
                     { wch: 12 }  // Price
                 ];
-                
-                // Format price columns as currency
+
+                // Format price column as currency
                 const range = XLSX.utils.decode_range(ws['!ref']);
                 for (let row = 1; row <= range.e.r; row++) {
-                    const cellAddress = XLSX.utils.encode_cell({ r: row, c: 3 }); // Column D (Price)
-                    if (ws[cellAddress]) {
-                        ws[cellAddress].z = '$#,##0.00'; // Currency format
+                    const priceCell = XLSX.utils.encode_cell({ r: row, c: 3 }); // Column D (Price)
+                    if (ws[priceCell]) {
+                        ws[priceCell].z = '$#,##0.00'; // Currency format
                     }
                 }
                 
@@ -1248,21 +1307,21 @@
                 }
 
                 const wb = XLSX.utils.book_new();
-                
+
                 const data = [
                     ['Date', 'Merchant', 'Total'],
                     [receiptData.date, receiptData.merchant, receiptData.total]
                 ];
-                
+
                 const ws = XLSX.utils.aoa_to_sheet(data);
-                
+
                 // Set column widths
                 ws['!cols'] = [
                     { wch: 12 }, // Date
                     { wch: 25 }, // Merchant
                     { wch: 12 }  // Total
                 ];
-                
+
                 // Format total as currency
                 if (ws['C2']) {
                     ws['C2'].z = '$#,##0.00';
@@ -1331,7 +1390,8 @@
             if (!receiptData) return;
 
             let text = `Merchant: ${receiptData.merchant}\n`;
-            text += `Date: ${receiptData.date}\n\n`;
+            text += `Date: ${receiptData.date}\n`;
+            text += `OCR Confidence: ${receiptData.confidence != null ? receiptData.confidence.toFixed(0) + '%' : 'n/a'}\n\n`;
             text += 'Items:\n';
             receiptData.items.forEach(item => {
                 text += `${item.name}\t${item.price.toFixed(2)}\n`;
